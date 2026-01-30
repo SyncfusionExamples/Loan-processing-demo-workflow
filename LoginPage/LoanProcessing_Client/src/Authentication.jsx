@@ -81,7 +81,7 @@ function Authentication({ onLogin }) {
       <form className="auth-form" onSubmit={isRegistering ? handleRegister : handleLogin}>
         {isRegistering && (
           <>
-            <label className="auth-label" htmlFor="username">Username:</label>
+            <label className="auth-label" htmlFor="username">User Name:</label>
             <input
               id="username"
               type="text"
@@ -94,7 +94,7 @@ function Authentication({ onLogin }) {
             />
           </>
         )}
-        <label className="auth-label" htmlFor="email">Email:</label>
+        <label className="auth-label" htmlFor="email">Username:</label>
         <input
           id="email"
           type="email"
