@@ -1,0 +1,17 @@
+[
+  {
+    "Username": "Manager",
+    "Email": "manager@gmail.com",
+    "Password": "$2a$11$nO0rxg9EkdnLIopaNmXGTebMt/ml14VIujW6DnlIfMQYR2b7UyAai"
+  },
+  {
+    "Username": "Loan Officer",
+    "Email": "loanofficer@gmail.com",
+    "Password": "$2a$11$lWuNDciq2Z8ccUcdSuNMuu62Zr940sBacgTzKjPNzyGO.NkoNkvUG"
+  },
+  {
+    "Username": "Customer",
+    "Email": "customer@gmail.com",
+    "Password": "$2a$11$lO6hkWuwfBJSWOAapv5D3.hIYa4vZCudlCYKeDTxjfNeNftY1ZTBa"
+  }
+]
