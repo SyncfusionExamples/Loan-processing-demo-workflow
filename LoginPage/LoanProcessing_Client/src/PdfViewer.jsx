@@ -5,6 +5,7 @@ import {
 } from '@syncfusion/ej2-react-pdfviewer';
 import Authentication from './Authentication';
 import './PdfViewer.css';
+import './App.css'
 
 const PdfViewer = () => {
   const [loggedInUser, setUser] = useState(null);
@@ -51,8 +52,28 @@ const PdfViewer = () => {
   return (
      <div style={styles.page}>
       {/* Header bar (blue) */}
-      <div style={styles.headerBar}>
-        <div style={styles.headerTitle}>Loan Details</div>
+     
+        
+
+<div className='dashborad_header'>
+      <div className='dashboard'>
+        <div>DASHBOARD</div>
+       <div>
+        <button type="button"  style={styles.addBtn}>
+          Logout
+        </button>
+      </div>
+      </div>
+
+      {/* RIGHT: Logout */}
+     
+      </div>
+ 
+
+    
+<div className="loandetails-container">
+    <div className='loandetails-header'>
+        <div >Loan Details</div>
         <button
           type="button"
           onClick={addRow}
@@ -64,8 +85,6 @@ const PdfViewer = () => {
           Create +
         </button>
       </div>
-
-    
 
       {/* Table in its own frame, visually separate from header/details */}
       <div style={styles.frame}>
@@ -117,6 +136,7 @@ const PdfViewer = () => {
           </table>
         </div>
       </div>
+      </div>
     </div>
   );
 };
@@ -129,7 +149,6 @@ const styles = {
     width: "100%",
     maxWidth: "100vw",
     margin: 0,
-    padding: "16px 16px 32px",
     fontFamily:
       'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial',
     display: "block",
@@ -198,6 +217,8 @@ const styles = {
     maxWidth: "100%",
     overflowX: "auto",
     overflowY: "visible",
+    padding: "0 10px", /* match .loandetails-header horizontal spacing */
+    boxSizing: "border-box",
   },
   table: {
     width: "100%",
