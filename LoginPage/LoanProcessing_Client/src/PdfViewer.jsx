@@ -15,16 +15,38 @@ const PdfViewer = () => {
   const [nextId, setNextId] = useState(1001);
 
   const addRow = () => {
+    const newRow = {
+      id: String(nextId),
+      customer: loggedInUser.username+'_'+String(nextId),
+      status: "New",
+      viewText: "View",
+    };
+
     setRows((prev) => [
       ...prev,
-      {
-        id: String(nextId),
-        customer: "Nehru",
-        status: "New",
-        viewText: "View",
-      },
+      newRow,
     ]);
     setNextId((prev) => prev + 1);
+
+    // Create a filename using the customer name and store it
+    const safeName = (newRow.customer || 'customer').replace(/[^a-z0-9_-]/gi, '_');
+    const filename = `${safeName}.txt`; // change extension if needed
+
+    // Store filename separately
+    try {
+      localStorage.setItem('savedFilename', filename);
+    } catch (e) { /* ignore */ }
+
+    // Also attach to logged in user object in localStorage if present
+    try {
+      const raw = localStorage.getItem('user');
+      if (raw) {
+        const userObj = JSON.parse(raw);
+        userObj.savedFilename = filename;
+        localStorage.setItem('user', JSON.stringify(userObj));
+        setUser(userObj); // update state so UI can react
+      }
+    } catch (e) { /* ignore */ }
   };
 
   const onView = (row) => {
@@ -59,7 +81,7 @@ const PdfViewer = () => {
       <div className='dashboard'>
         <div>DASHBOARD</div>
        <div>
-        <button type="button"  style={styles.addBtn}>
+        <button type="button" onClick={logout} style={styles.addBtn}>
           Logout
         </button>
       </div>
@@ -68,22 +90,25 @@ const PdfViewer = () => {
       {/* RIGHT: Logout */}
      
       </div>
- 
+  
 
     
 <div className="loandetails-container">
     <div className='loandetails-header'>
-        <div >Loan Details</div>
-        <button
-          type="button"
-          onClick={addRow}
-          aria-label="Create row"
-          title="Create row"
-          style={styles.addBtn}
-        >
-          {/* 1) Button label changed */}
-          Create +
-        </button>
+        <div className='loan_Deatils'>Loan Details</div>
+        { /* Only show Create button for customers */ }
+        {
+        loggedInUser && (loggedInUser.username === 'Customer' || loggedInUser.username === 'customer') && (
+          <button
+            type="button"
+            onClick={addRow}
+            aria-label="Create row"
+            title="Create row"
+            style={styles.addBtn}
+          >
+            Create +
+          </button>
+        )}
       </div>
 
       {/* Table in its own frame, visually separate from header/details */}
@@ -102,7 +127,7 @@ const PdfViewer = () => {
             <thead>
               <tr>
                 <th style={{ ...styles.th, ...styles.idCol }}>Loan ID</th>
-                <th style={styles.th}>Customer Name</th>
+                <th style={styles.th}>Document Name</th>
                 <th style={{ ...styles.th, ...styles.idCol }}>Status</th>
                 <th style={{ ...styles.th, ...styles.lastCol }}>Action</th>
               </tr>
@@ -111,7 +136,7 @@ const PdfViewer = () => {
               {rows.length === 0 ? (
                 <tr>
                   <td colSpan={4} style={styles.emptyCell}>
-                    No rows yet. Click the “Create +” button to add.
+                 No loan applications yet. Click the “Create +” button to add a new application.
                   </td>
                 </tr>
               ) : (
