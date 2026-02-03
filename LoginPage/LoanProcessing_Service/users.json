@@ -13,5 +13,10 @@
     "Username": "Customer1",
     "Email": "customer1@gmail.com",
     "Password": "$2a$11$G0dV29wQvdbPyL62A2l6outA4LXsUJNQ25Vm5ToAhEHsKiPHWqOr6"
+  },
+  {
+    "Username": "Customer2",
+    "Email": "customer2@gmail.com",
+    "Password": "$2a$11$89IlwTQr.MSMHxraPqDTReRZiIJZ6/YQhNA9zhbpDd6n0LC3eDt7u"
   }
 ]

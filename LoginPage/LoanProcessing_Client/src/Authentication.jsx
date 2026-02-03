@@ -1,8 +1,9 @@
 
 import { useState } from "react";
 import "./index.css"; // Ensure this exists and has your styles
+import "./Authentication.css";
 
-const hostURL = "https://localhost:44310/api/Authentication";
+const hostURL = "http://localhost:5063/api/Authentication";
 
 function Authentication({ onLogin }) {
   const [isRegistering, setIsRegistering] = useState(false);

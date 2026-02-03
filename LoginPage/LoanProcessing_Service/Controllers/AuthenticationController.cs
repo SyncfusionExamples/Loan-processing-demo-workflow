@@ -91,5 +91,70 @@ public class AuthenticationController : ControllerBase
         var json = System.IO.File.ReadAllText(_userFilePath);
         return JsonSerializer.Deserialize<List<User>>(json) ?? new List<User>();
     }
+
+    // GET api/authentication/GetPdfStream
+    [HttpGet("GetPdfStream/{filename}")]
+    public IActionResult GetPdfStream(string filename)
+    {
+        if (string.IsNullOrWhiteSpace(filename))
+            return BadRequest(new { message = "Filename is required" });
+        try
+        {
+            var dataDir = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+            var filePath = Path.Combine(dataDir, filename);
+
+            if (!System.IO.File.Exists(filePath))
+                return NotFound(new { message = "PDF file not found." });
+
+            var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+            return new FileStreamResult(stream, "application/pdf");
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error retrieving PDF stream: {ex.Message}");
+        }
+    }
+
+    // POST api/authentication/SaveFilledForms
+    [HttpPost("SaveFilledForms")]
+    public IActionResult SaveFilled([FromBody] SaveFilledRequest req)
+    {
+        if (req == null || string.IsNullOrWhiteSpace(req.Base64))
+            return BadRequest("Invalid data");
+
+        // Extract pure Base64 (strip data URL prefix if present)
+        var data = req.Base64.Contains(",") ? req.Base64.Split(',')[1] : req.Base64;
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(data);
+        }
+        catch
+        {
+            return BadRequest("Invalid base64 data");
+        }
+
+        // Save into project Data folder
+        var dataDir = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+        Directory.CreateDirectory(dataDir);
+
+        var desired = string.IsNullOrWhiteSpace(req.FileName) ? "loan_form_1.pdf" : req.FileName.Trim();
+        if (!desired.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) desired += ".pdf";
+        var safeName = Path.GetFileName(desired); // prevents path traversal
+
+        var fullPath = Path.Combine(dataDir, safeName);
+        System.IO.File.WriteAllBytes(fullPath, bytes);
+
+        // Logical public URL (Data folder may not be served by StaticFiles)
+        var publicUrl = $"/Data/{Uri.EscapeDataString(safeName)}";
+
+        return Ok(new { saved = true, path = fullPath, url = publicUrl });
+    }
+
+    public class SaveFilledRequest
+    {
+        public string? Base64 { get; set; }
+        public string? FileName { get; set; }
+    }
 }
 
