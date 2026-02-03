@@ -1,7 +1,8 @@
 import { useState } from "react";
-import "./index.css"; // Make sure this CSS file exists and is correctly styled
+import "./index.css";
+import "./Authentication.css" // Make sure this CSS file exists and is correctly styled
 
-const hostURL = "https://localhost:44310/api/Authentication";
+const hostURL = "https://localhost:7255/pdfviewer";
 
 function Authentication({ onLogin }) {
   const [isRegistering, setIsRegistering] = useState(false);
@@ -45,7 +46,6 @@ function Authentication({ onLogin }) {
   const handleRegister = async (e) => {
     e.preventDefault();
     setMessage("");
-
     const form = e.currentTarget;
     const email = form.elements.email.value;
     const password = form.elements.password.value;
