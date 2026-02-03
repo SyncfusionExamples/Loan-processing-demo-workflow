@@ -1,17 +1,17 @@
 [
   {
-    "Username": "Customer",
-    "Email": "customer@gmail.com",
-    "Password": "$2a$11$lO6hkWuwfBJSWOAapv5D3.hIYa4vZCudlCYKeDTxjfNeNftY1ZTBa"
-  },
-  {
     "Username": "Manager",
     "Email": "manager@gmail.com",
-    "Password": "$2a$11$4LD96HLtBATVhL92xUJIXuVRMFK6SnhWONfLCEvw7N3C1AoDzdRJu"
+    "Password": "$2a$11$.UJpvZTTy1LCqq8clBPyHeINXCyp3vlByDG6YQlLyVC9b52Xy/4lW"
   },
   {
     "Username": "Loan Officer",
     "Email": "loanofficer@gmail.com",
-    "Password": "$2a$11$hm1BsBXU8xQjTmtq2Nhd2O5xJzuEj9Iio9d1tlpLcNTy.6w6FAGJm"
+    "Password": "$2a$11$wy6wvh3lw3H4sqSQVEniiOmadMwxqKEV6TJ98Jxg7u2fdqKB29Bay"
+  },
+  {
+    "Username": "Customer1",
+    "Email": "customer1@gmail.com",
+    "Password": "$2a$11$G0dV29wQvdbPyL62A2l6outA4LXsUJNQ25Vm5ToAhEHsKiPHWqOr6"
   }
 ]
