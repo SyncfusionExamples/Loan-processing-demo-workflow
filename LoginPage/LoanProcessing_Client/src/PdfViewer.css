@@ -107,14 +107,14 @@ html, body, #root {
 	border-radius: 8px;
 }
 
-/* Disabled button baseline */
+/* Disabled button baseline - use neutral gray for initial disabled state */
 .button.disabled, .button:disabled {
-	background: #5297ec !important;
-	color: #10233d !important;
+	background: #e7eaef !important; /* gray-200 */
+	color: #6b7280 !important; /* gray-600 */
 	cursor: not-allowed !important;
-	opacity: 0.9;
+	opacity: 1;
 	border: none;
-  margin-right: 10px;
+	margin-right: 10px;
 }
 
 /* Enabled / disabled visual styles for pdf action buttons */
@@ -128,8 +128,8 @@ html, body, #root {
 	background: #1b3aa0;
 }
 .pdf-action-button.disabled {
-	background: #dbeafe; /* light blue faded */
-	color: #475569;
+	background: #e5e7eb; /* gray-200 */
+	color: #6b7280; /* gray-600 */
 	cursor: not-allowed;
 	box-shadow: none;
 }

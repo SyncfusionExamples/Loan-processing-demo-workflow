@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Authentication from './Authentication';
 import './DashBoard.css'
-import PdfViewer from './PDFViewer.jsx'
+import PdfViewer from './PdfViewer.jsx'
+import { LoanStatus } from './constants/loanStatus.js'
 
 const DashBoard = () => {
   const [loggedInUser, setUser] = useState(null);
@@ -10,6 +11,7 @@ const DashBoard = () => {
   const [viewerMode, setViewerMode] = useState(false);
   const [loanStatus, setLoanStatus] = useState("");
   const [pdfFileName, setPdfFileName] = useState("Loan_Application_Form");
+  const [sanctionMode, setSanctionMode] = useState(false)
   const [attachmentsVersion, setAttachmentsVersion] = useState(0);
   //File Path of respective file
   const file = `wwwroot/pdfs/${pdfFileName}.pdf`
@@ -17,6 +19,7 @@ const DashBoard = () => {
   const openViewerForNew = () => {
     setPdfFileName("Loan_Application_Form");
     setViewerMode(true);
+    setLoanStatus("");
   };
 
   const prevNextId = useRef(nextId);
@@ -28,19 +31,33 @@ const DashBoard = () => {
         {
           id: createdId,
           customer: pdfFileName || `Loan_Application_Form_${createdId}`,
-          status: loanStatus || "SUBMITTED",
+          status: loanStatus,
           viewText: "View",
         },
       ]);
     }
     prevNextId.current = nextId;
-  }, [nextId, pdfFileName, loanStatus]);
+  }, [nextId, pdfFileName]);
+
+  // Keep the table rows in sync when the currently-open file or its status changes
+  useEffect(() => {
+    if (!pdfFileName) return;
+    setRows((prev) =>
+      prev.map((r) => (r.customer === pdfFileName ? { ...r, status: loanStatus } : r))
+    );
+  }, [pdfFileName, loanStatus]);
 
   const onView = (row) => {
     // Ensure the viewer shows the file associated with the clicked row
     if (row && row.customer) setPdfFileName(row.customer)
     if (row && row.status) setLoanStatus(row.status)
     setViewerMode(true);
+    if (loggedInUser.username === 'Loan Officer' && row?.status === LoanStatus.SUBMITTED) {
+      setLoanStatus(LoanStatus.UNDER_REVIEW);
+    }
+    if (pdfFileName.toLowerCase().includes("sanction")) {
+      setSanctionMode(true);
+    }
   };
 
   useEffect(() => {
@@ -62,11 +79,12 @@ const DashBoard = () => {
   if (viewerMode) {
     return (
       <div>
+        
         <div className="pdf-header">
           <div className="pdf-title">{pdfFileName}</div>
-          <button className="pdf-close" onClick={() => setViewerMode(false)} aria-label="Close viewer">✕</button>
+          <button className="pdf-close" onClick={() => {setViewerMode(false); setLoanStatus(loanStatus)}} aria-label="Close viewer">✕</button>
         </div>
-        <PdfViewer file={file} role={loggedInUser.username} loanStatus={loanStatus} count={nextId} setFileCount={setNextId} setPdfFileName={setPdfFileName} setViewerMode={setViewerMode} setLoanStatus={setLoanStatus} pdfFileName = {pdfFileName}/>
+        <PdfViewer file={file} role={loggedInUser.username} loanStatus={loanStatus} count={nextId} setFileCount={setNextId} setPdfFileName={setPdfFileName} setViewerMode={setViewerMode} setLoanStatus={setLoanStatus} pdfFileName = {pdfFileName} sanctionMode = {sanctionMode} setSanctionMode = {setSanctionMode}/>
       </div>
     )
   }
