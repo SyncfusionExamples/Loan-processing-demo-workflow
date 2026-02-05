@@ -38,7 +38,7 @@
 	bottom: 0px;
 	left: 20px;
 	right: 20px;
-	height: 75px; /* bar height */
+	height: 50px; /* bar height */
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -58,8 +58,8 @@
 }
 
 .pdf-actionbar .pdf-action-button {
-	height: 60px; /* within 50-80px range */
-	min-width: 170px;
+	height: 42px; /* within 50-80px range */
+	min-width: 140px;
 	border-radius: 10px;
 	border: none; /* remove default button border */
 	font-size: 18px;
@@ -69,6 +69,7 @@
 	align-items: center; /* center content vertically */
 	justify-content: center; /* center content horizontally */
 	line-height: 1; /* avoid baseline shifts */
+	cursor: pointer;
 }
 
 /* Role-specific color variants */
@@ -77,18 +78,18 @@
 	color: #0b3a66;
 }
 .pdf-action-button.reject {
-	background: #f85858; /* light red */
-	color: #222121;
+	background: #ede9e9; /* light red */
+	color: #f2083f;
 	border: none; /* ensure no border (fix black border issue) */
 	outline: none;
 }
 .pdf-action-button.final {
-	background: #f0e216; /* light yellow */
-	color: #3b3b39;
+	background:  #f2f21b;; /* light yellow */
+	color: #343432;
 }
 .pdf-action-button.request {
-	background: #dbf340; /* light cyan/blue */
-	color: #171919;
+	background:  #ede9e9;; /* light yellow */
+	color: #393938;
 }
 
 /* spacing between multiple action buttons */
@@ -140,13 +141,18 @@ html, body, #root {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	margin: 8px 20px 6px 20px; /* small gap above the viewer */
 	z-index: 1300;
+	 background: linear-gradient(90deg, #5b21b6 0%, #6d28d9 100%);/* deep purple gradient */
+  color: #ffffff;
+  padding: 18px 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(2,6,23,0.18);
+  margin-bottom: 10px;
+  
 }
 .pdf-title {
 	font-weight: 600;
-	color: #0f172a;
-	background: rgba(255,255,255,0.95);
+	color:  rgba(255,255,255,0.95);
 	padding: 6px 10px;
 	border-radius: 8px;
 }

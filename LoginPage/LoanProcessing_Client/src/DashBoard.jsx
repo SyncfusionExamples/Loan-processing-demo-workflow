@@ -12,7 +12,6 @@ const DashBoard = () => {
   const [loanStatus, setLoanStatus] = useState("");
   const [pdfFileName, setPdfFileName] = useState("Loan_Application_Form");
   const [sanctionMode, setSanctionMode] = useState(false)
-  const [attachmentsVersion, setAttachmentsVersion] = useState(0);
   //File Path of respective file
   const file = `wwwroot/pdfs/${pdfFileName}.pdf`
   
@@ -26,18 +25,30 @@ const DashBoard = () => {
   useEffect(() => {
     if (prevNextId.current !== nextId) {
       const createdId = String(prevNextId.current);
-      setRows((prev) => [
-        ...prev,
-        {
-          id: createdId,
-          customer: pdfFileName || `Loan_Application_Form_${createdId}`,
-          status: loanStatus,
-          viewText: "View",
-        },
-      ]);
+ 
+      // prepare normalized display name (remove .pdf if present)
+      const rawName = (pdfFileName || `Loan_Application_Form_${createdId}`) || '';
+      const displayName = rawName.replace(/\.pdf$/i, '');
+ 
+      setRows(prev => {
+        // avoid duplicates by id or filename
+        const existsById = prev.some(r => String(r.id) === String(createdId));
+        const existsByFile = prev.some(r => (r.fileName || '').toString().trim().toLowerCase() === displayName.toString().trim().toLowerCase());
+        if (existsById || existsByFile) return prev;
+        return [
+          ...prev,
+          {
+            id: createdId,
+            customer: displayName,
+            status: loanStatus || 'SUBMITTED',
+            viewText: 'View',
+            fileName: rawName
+          }
+        ];
+      });
     }
     prevNextId.current = nextId;
-  }, [nextId, pdfFileName]);
+  }, [nextId, pdfFileName, loanStatus]);
 
   // Keep the table rows in sync when the currently-open file or its status changes
   useEffect(() => {
@@ -81,7 +92,7 @@ const DashBoard = () => {
       <div>
         
         <div className="pdf-header">
-          <div className="pdf-title">{pdfFileName}</div>
+          <div className="pdf-title">{pdfFileName.replace(/_/g, ' ').replace(/\.pdf$/i, '')}</div>
           <button className="pdf-close" onClick={() => {setViewerMode(false); setLoanStatus(loanStatus)}} aria-label="Close viewer">✕</button>
         </div>
         <PdfViewer file={file} role={loggedInUser.username} loanStatus={loanStatus} count={nextId} setFileCount={setNextId} setPdfFileName={setPdfFileName} setViewerMode={setViewerMode} setLoanStatus={setLoanStatus} pdfFileName = {pdfFileName} sanctionMode = {sanctionMode} setSanctionMode = {setSanctionMode}/>
@@ -134,7 +145,7 @@ const DashBoard = () => {
             <thead>
               <tr>
                 <th style={{ ...styles.th, ...styles.idCol }}>Loan ID</th>
-                <th style={styles.th}>Customer Name</th>
+                <th style={styles.th}>Document Name</th>
                 <th style={{ ...styles.th, ...styles.idCol }}>Status</th>
                 <th style={{ ...styles.th, ...styles.lastCol }}>Action</th>
                 <th style={{ ...styles.th, ...styles.lastCol }}>Attachments</th>

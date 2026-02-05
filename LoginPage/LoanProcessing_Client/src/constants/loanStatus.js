@@ -6,6 +6,5 @@ export const LoanStatus = Object.freeze({
   PENDING_APPROVAL: 'PENDING APPROVAL', // Escalated to manager
   APPROVED: 'APPROVED',              // Manager approved
   REJECTED: 'REJECTED',
-  SIGN_REQUIRED: "Sign Required",
-  FINAL: "Final"             // Rejected by officer/manager
+  SIGN_REQUIRED: "Sign Required",            // Rejected by officer/manager
 });
