@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React,{ useState, useEffect, useRef,  } from 'react';
 import Authentication from './Authentication';
 import './DashBoard.css'
 import PdfViewer from './PdfViewer.jsx'
@@ -7,29 +7,46 @@ import { LoanStatus } from './constants/loanStatus.js'
 const DashBoard = () => {
   const [loggedInUser, setUser] = useState(null);
   const [rows, setRows] = useState([]);
-  const [nextId, setNextId] = useState(1001);
+  //const [nextId, setNextId] = useState(1001);
+  const [nextId, setNextId] = useState(() => {
+    try {
+      const v = sessionStorage.getItem('nextId');
+      return v ? Number(v) : 1001;
+    } catch (e) {
+      return 1001;
+    }
+  });
   const [viewerMode, setViewerMode] = useState(false);
   const [loanStatus, setLoanStatus] = useState("");
   const [pdfFileName, setPdfFileName] = useState("Loan_Application_Form");
   const [sanctionMode, setSanctionMode] = useState(false)
+  const [actionBar, setActionBar] = useState(true);
+  
   //File Path of respective file
   const file = `wwwroot/pdfs/${pdfFileName}.pdf`
-  
   const openViewerForNew = () => {
     setPdfFileName("Loan_Application_Form");
     setViewerMode(true);
     setLoanStatus("");
   };
 
+  //Get the ID from the session storage
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('nextId', String(nextId));
+    } catch (e) { /* ignore */ }
+  }, [nextId]);
+
   const prevNextId = useRef(nextId);
+  //Update the Row When the Loan application added
   useEffect(() => {
     if (prevNextId.current !== nextId) {
       const createdId = String(prevNextId.current);
- 
+
       // prepare normalized display name (remove .pdf if present)
       const rawName = (pdfFileName || `Loan_Application_Form_${createdId}`) || '';
       const displayName = rawName.replace(/\.pdf$/i, '');
- 
+
       setRows(prev => {
         // avoid duplicates by id or filename
         const existsById = prev.some(r => String(r.id) === String(createdId));
@@ -50,6 +67,69 @@ const DashBoard = () => {
     prevNextId.current = nextId;
   }, [nextId, pdfFileName, loanStatus]);
 
+  //Retrive Files from server based on Roles
+  useEffect(() => {
+    const loadSavedFiles = async () => {
+      try {
+
+        const user = loggedInUser ?? JSON.parse(localStorage.getItem("user") || "null");
+        const username = user?.username || user?.name || user?.id || user?.userId;
+        if (!username) return;
+
+        // treat these exact usernames as privileged
+        const privilegedNames = ['Manager', 'Loan Officer']; // add variations you need
+        const isPrivileged = privilegedNames.includes(username);
+
+        // build URL: privileged -> request ALL, else request only this user
+        const base = process.env.REACT_APP_API_URL || 'http://localhost:5063';
+        const url = isPrivileged
+          ? `${base}/api/Authentication/GetUserFiles?username=ALL`
+          : `${base}/api/Authentication/GetUserFiles?username=${encodeURIComponent(username)}`;
+
+        const resp = await fetch(url); // include if your API uses cookies
+        if (!resp.ok) {
+          const body = await resp.text().catch(() => '<no body>');
+          console.warn('GetUserFiles failed', resp.status, body);
+          return;
+        }
+        const list = await resp.json();
+        if (!Array.isArray(list)) return;
+        list.reverse();
+        const mapped = list.map(item => {
+          const docId = item.documentId || item.documentid || item.DocumentId || '';
+          const rawName = (item.fileName || item.file || item.FileName || item.customerName || item.customer || '').toString().trim();
+
+          // remove .pdf extension if present
+          const noExt = rawName.replace(/\.pdf$/i, '');
+
+          // remove any existing trailing _<docId> so we don't duplicate
+          const baseName = docId ? noExt.replace(new RegExp(`_${docId}$`, 'i'), '') : noExt;
+
+          // final display: baseName + _docId (only if docId present)
+          let displayName = baseName;
+          if (!baseName.toLowerCase().includes("sanction")) {
+            displayName = docId ? `${baseName}_${docId}` : baseName;
+          }
+          return {
+            id: String(docId),
+            customer: displayName,
+            status: item.status || 'SUBMITTED',
+            viewText: 'View',
+            fileName: rawName
+          };
+        });
+        setRows(mapped);
+      } catch (e) {
+        console.warn("loadSavedFiles error", e);
+      }
+    };
+
+    loadSavedFiles();
+    const handler = () => loadSavedFiles();
+    window.addEventListener('userFilesChanged', handler);
+    return () => window.removeEventListener('userFilesChanged', handler);
+  }, [loggedInUser]);
+
   // Keep the table rows in sync when the currently-open file or its status changes
   useEffect(() => {
     if (!pdfFileName) return;
@@ -58,24 +138,66 @@ const DashBoard = () => {
     );
   }, [pdfFileName, loanStatus]);
 
+ //Change the actionBar state when PDF Viewer open and close
+  useEffect(() => {
+    if (!viewerMode) setActionBar(true);
+  }, [viewerMode]);
+  
+   // Ensure the viewer shows the file associated with the clicked row
   const onView = (row) => {
-    // Ensure the viewer shows the file associated with the clicked row
     if (row && row.customer) setPdfFileName(row.customer)
     if (row && row.status) setLoanStatus(row.status)
     setViewerMode(true);
-    if (loggedInUser.username === 'Loan Officer' && row?.status === LoanStatus.SUBMITTED) {
+    if (loggedInUser?.username === 'Loan Officer' && row?.status === LoanStatus.SUBMITTED) {
       setLoanStatus(LoanStatus.UNDER_REVIEW);
     }
-    if (pdfFileName.toLowerCase().includes("sanction")) {
-      setSanctionMode(true);
+    const clickedName = (row && row.customer) ? String(row.customer) : '';
+    const isSanction = clickedName.toLowerCase().includes('sanction');
+    setSanctionMode(Boolean(isSanction));
+    if ((loggedInUser.username !== "Manager" && loggedInUser.username !== "Loan Officer") && row && (row.status === LoanStatus.SUBMITTED || row.status === LoanStatus.REJECTED || row.status === LoanStatus.PENDING_APPROVAL || row.status === LoanStatus.APPROVED)) {
+      setActionBar(false);
     }
   };
+
+  //Update the JSON file on the server based on the Status
+  const didMount = useRef(false);
+  useEffect(() => {
+    if (!didMount.current) { didMount.current = true; return; }
+    console.log('status effect ->', { loanStatus, pdfFileName });
+
+    (async () => {
+      try {
+        const user = JSON.parse(localStorage.getItem('user') || 'null');
+        const username = user?.username || '';
+
+        const base = process.env.REACT_APP_API_URL || 'http://localhost:5063';
+        const documentId = (pdfFileName && (pdfFileName.match(/(\d+)(?=\.pdf$|$)/) || [])[0]) || null;
+
+        const payload = { DocumentId: documentId, FileName: pdfFileName, Status: loanStatus };
+        console.log('calling UpdateFileStatus', payload);
+
+        const resp = await fetch(`${base}/api/Authentication/UpdateFileStatus`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const text = await resp.text().catch(() => '<no body>');
+        console.log('UpdateFileStatus response', resp.status, text);
+        if (!resp.ok) return;
+
+        window.dispatchEvent(new CustomEvent('userFilesChanged', { detail: { documentId, fileName: pdfFileName, username } }));
+      } catch (e) {
+        console.warn('UpdateFileStatus error', e);
+      }
+    })();
+  }, [loanStatus]);
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem("user");
       if (saved) setUser(JSON.parse(saved));
-    } catch {/* ignore */}
+    } catch {/* ignore */ }
   }, []);
 
 
@@ -90,241 +212,109 @@ const DashBoard = () => {
   if (viewerMode) {
     return (
       <div>
-        
         <div className="pdf-header">
           <div className="pdf-title">{pdfFileName.replace(/_/g, ' ').replace(/\.pdf$/i, '')}</div>
-          <button className="pdf-close" onClick={() => {setViewerMode(false); setLoanStatus(loanStatus)}} aria-label="Close viewer">✕</button>
+          <button className="pdf-close" onClick={() => { setViewerMode(false); setLoanStatus(loanStatus) }} aria-label="Close viewer">✕</button>
         </div>
-        <PdfViewer file={file} role={loggedInUser.username} loanStatus={loanStatus} count={nextId} setFileCount={setNextId} setPdfFileName={setPdfFileName} setViewerMode={setViewerMode} setLoanStatus={setLoanStatus} pdfFileName = {pdfFileName} sanctionMode = {sanctionMode} setSanctionMode = {setSanctionMode}/>
+        <PdfViewer file={file} role={loggedInUser.username} loanStatus={loanStatus} count={nextId} setFileCount={setNextId} setPdfFileName={setPdfFileName} setViewerMode={setViewerMode} setLoanStatus={setLoanStatus} pdfFileName={pdfFileName} sanctionMode={sanctionMode} setSanctionMode={setSanctionMode} actionBar={actionBar} />
       </div>
     )
   }
 
   return (
-     <div style={styles.page}>
+    <div className="dashboard-page">
       {/* Header bar (blue) */}
-<div className='dashborad_header'>
-      <div className='dashboard'>
-        <div>DASHBOARD</div>
-       <div>
-        <button type="button" onClick={logout} style={styles.addBtn}>
-          Logout
-        </button>
-      </div>
-      </div>
+      <div className='dashborad_header'>
+        <div className='dashboard'>
+          <div>DASHBOARD</div>
+          <div>
+            <button type="button" onClick={logout} className="addBtn">
+              Logout
+            </button>
+          </div>
+        </div>
 
-      {/* RIGHT: Logout */}
-     
-      </div>
-<div className="loandetails-container">
-    <div className='loandetails-header'>
-        <div >Loan Details</div>
-        <button
-          type="button"
-          onClick={() => openViewerForNew()}
-          aria-label="Create row"
-          title="Create row"
-          style={styles.addBtn}
-        >
-          {/* 1) Button label changed */}
-          Create +
-        </button>
-      </div>
+        {/* RIGHT: Logout */}
 
-      {/* Table in its own frame, visually separate from header/details */}
-      <div style={styles.frame}>
-        <div style={styles.tableWrap}>
+      </div>
+      <div className="loandetails-container">
+        <div className='loandetails-header'>
+          <div >Loan Details</div>
+          {
+            loggedInUser && (loggedInUser.username !== "Manager" && loggedInUser.username !== "Loan Officer") && (
+              <button
+                type="button"
+                onClick={() => openViewerForNew()}
+                aria-label="Create row"
+                title="Create row"
+                className="addBtn"
+              >
+                Create +
+              </button>
+            )}
+        </div>
 
-<style>{`
+        {/* Table in its own frame, visually separate from header/details */}
+        <div className="frame">
+          <div className="tableWrap">
+
+            <style>{`
       [data-hover="rows"] tbody tr:hover td {
         background: #f3f4f6;
         
       }
     `}</style>
-          <table style={styles.table} data-hover="rows">
-            <thead>
-              <tr>
-                <th style={{ ...styles.th, ...styles.idCol }}>Loan ID</th>
-                <th style={styles.th}>Document Name</th>
-                <th style={{ ...styles.th, ...styles.idCol }}>Status</th>
-                <th style={{ ...styles.th, ...styles.lastCol }}>Action</th>
-                <th style={{ ...styles.th, ...styles.lastCol }}>Attachments</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
+            <table className="loandetails-table" data-hover="rows">
+              <thead>
                 <tr>
-                  <td colSpan={4} style={styles.emptyCell}>
-                    No rows yet. Click the “Create +” button to add.
-                  </td>
+                  <th className="th idCol">Loan ID</th>
+                  <th className="th">Customer Name</th>
+                  <th className="th statusCol">Status</th>
+                  <th className="th lastCol">Action</th>
+                  <th className="th lastCol">Attachments</th>
                 </tr>
-              ) : (
-                rows.map((r, idx) => (
-                  <tr key={`${r.id}-${idx}`}>
-                    <td style={{ ...styles.td, ...styles.idCol }}>{r.id}</td>
-                    <td style={styles.td}>{r.customer}</td>
-                    <td style={{ ...styles.td, ...styles.idCol }}>{r.status}</td>
-                    <td style={{ ...styles.td, ...styles.lastCol }}>
-                      <button
-                        type="button"
-                        onClick={() => onView(r)}
-                        style={styles.viewBtn}
-                      >
-                        {r.viewText}
-                      </button>
-                    </td>
-                    <td style={{ ...styles.td, ...styles.idCol }}>
-                      {(() => {
-                        const key = `attachmentsCount_${r.id}`;
-                        const v = sessionStorage.getItem(key);
-                        const count = v ? parseInt(v, 10) || 0 : 0;
-                        return <span style={styles.attachCount}>({count})</span>;
-                      })()}
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="emptyCell">
+                      No rows yet. Click the “Create +” button to add.
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  rows.map((r, idx) => (
+                    <tr key={`${r.id}-${idx}`}>
+                      <td className="td idCol">{r.id}</td>
+                      <td className="td">{r.customer}</td>
+                      <td className="td statusCol">{r.status}</td>
+                      <td className="td lastCol">
+                        <button
+                          type="button"
+                          onClick={() => onView(r)}
+                          className="viewBtn"
+                        >
+                          {r.viewText}
+                        </button>
+                      </td>
+                      <td className="td idCol">
+                        {(() => {
+                          const key = `attachmentsCount_${r.id}`;
+                          const v = sessionStorage.getItem(key);
+                          const count = v ? parseInt(v, 10) || 0 : 0;
+                          return <span className="attachCount">({count})</span>;
+                        })()}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
       </div>
     </div>
   );
 };
 
-/** Styles */
-const styles = {
-  page: {
-    minHeight: "100vh",
-    boxSizing: "border-box",
-    width: "100%",
-    maxWidth: "100vw",
-    margin: 0,
-    fontFamily:
-      'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial',
-    display: "block",
-  },
-
-  /* Blue header bar (no border) */
-  headerBar: {
-    display: "grid",
-    gridTemplateColumns: "1fr auto",
-    alignItems: "center",
-    padding: "12px 12px",
-    background: "#1e3a8a",
-    color: "#fff",
-    borderRadius: 6,
-    position: "sticky",
-    top: 0,
-    zIndex: 3,
-    /* add a small gap below the header so nothing touches it */
-    marginBottom: 10,
-  },
-  headerTitle: {
-    textAlign: "left",
-    fontSize: 20,
-    fontWeight: 700,
-    letterSpacing: 0.2,
-  },
-  addBtn: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    height: 36,
-    padding: "0 12px",
-    fontSize: 16,
-    fontWeight: 700,
-    lineHeight: 1,
-    border: "2px solid #0b1f5e",
-    borderRadius: 8,
-    background: "#fff",
-    color: "#0b1f5e",
-    cursor: "pointer",
-  },
-
-  /* NEW: separate “custom details” row under the header */
-  detailsRow: {
-    marginBottom: 12,                          // visual separation above table
-    display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(160px, 1fr))",
-    gap: 12,
-    alignItems: "center",
-    padding: "10px 12px",
-    background: "#f1f5f9",
-    border: "1px solid #cbd5e1",
-    borderRadius: 6,
-  },
-
-  /* Table frame (separate block) */
-  frame: {
-    boxSizing: "border-box",
-    border: "1px solid #d1d5db",
-    width: "100%",
-    borderRadius: 1,
-    background: "#fff",
-  },
-  tableWrap: {
-    width: "100%",
-    maxWidth: "100%",
-    overflowX: "auto",
-    overflowY: "visible",
-    padding: "0 10px", /* match .loandetails-header horizontal spacing */
-    boxSizing: "border-box",
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-    borderSpacing: 0,
-    tableLayout: "fixed",
-  },
-  th: {
-    borderBottom: "1px solid #e5e7eb",
-    //borderRight: "2px solid #000",
-    textAlign: "left",
-    color: "#111827",
-    padding: "10px",
-    fontWeight: 600,
-    wordWrap: "break-word",
-  },
-  td: {
-    borderTop: "1px solid #e5e7eb",
-    //borderRight: "2px solid #000",
-    padding: "10px",
-    wordWrap: "break-word",
-  },
-
-  /* keep ID column fixed width if you want */
-  idCol: {
-    width: 120,
-    minWidth: 120,
-    maxWidth: 120,
-    textAlign: "center",
-    whiteSpace: "nowrap",
-  },
-
-  /* last column: no right border to avoid double line on frame edge */
-  lastCol: {
-    width: 120,
-    minWidth: 120,
-    maxWidth: 120,
-    textAlign: "center",
-    whiteSpace: "nowrap",
-    borderRight: "none",
-  },
-
-  emptyCell: {
-    padding: "16px",
-    textAlign: "center",
-    color: "#666",
-  },
-
-  viewBtn: {
-    padding: "6px 10px",
-    border: "1px solid #000",
-    background: "#fff",
-    cursor: "pointer",
-    borderRadius: 4,
-  },
-};
+// styles moved to DashBoard.css — removed inline `styles` object.
 export default DashBoard;

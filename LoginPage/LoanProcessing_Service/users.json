@@ -1,22 +1,22 @@
 [
   {
+    "Username": "Loan Officer",
+    "Email": "Loanofficer@gmail.com",
+    "Password": "$2a$11$iywRFgnPn9jbOHZmTT8M2O6bcq7gz.tDlVQRr0VgEqH7ZDqTtYkAS"
+  },
+  {
     "Username": "Manager",
     "Email": "manager@gmail.com",
-    "Password": "$2a$11$.UJpvZTTy1LCqq8clBPyHeINXCyp3vlByDG6YQlLyVC9b52Xy/4lW"
+    "Password": "$2a$11$HXW8/Ne39.8rIHfMtIeFFe2U5.7.IN7sAE3N33aa9Dr.qwpz1R7Gy"
   },
   {
-    "Username": "Loan Officer",
-    "Email": "loanofficer@gmail.com",
-    "Password": "$2a$11$wy6wvh3lw3H4sqSQVEniiOmadMwxqKEV6TJ98Jxg7u2fdqKB29Bay"
+    "Username": "Sam",
+    "Email": "sam@gmail.com",
+    "Password": "$2a$11$EC7ZKWG7FitjYAI4kgLNqOsa6CIrICC/gIgsgO875XwuxiEo2jP.6"
   },
   {
-    "Username": "Customer1",
-    "Email": "customer1@gmail.com",
-    "Password": "$2a$11$G0dV29wQvdbPyL62A2l6outA4LXsUJNQ25Vm5ToAhEHsKiPHWqOr6"
-  },
-  {
-    "Username": "Customer2",
-    "Email": "customer2@gmail.com",
-    "Password": "$2a$11$89IlwTQr.MSMHxraPqDTReRZiIJZ6/YQhNA9zhbpDd6n0LC3eDt7u"
+    "Username": "John",
+    "Email": "John@gmail.com",
+    "Password": "$2a$11$XvR3tucmBQJhMCterzW6mu4RziBSvCFiy7ZRpy4CC1yBo/3j.TnIa"
   }
 ]
