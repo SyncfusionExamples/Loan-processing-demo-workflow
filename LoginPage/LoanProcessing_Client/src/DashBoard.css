@@ -1,25 +1,26 @@
-.dashborad_header{
-    background: linear-gradient(90deg, #5b21b6 0%, #6d28d9 100%);/* deep purple gradient */
+.dashborad_header {
+  background: linear-gradient(90deg, #5b21b6 0%, #6d28d9 100%);
+  /* deep purple gradient */
   color: #ffffff;
   padding: 18px 20px;
   border-radius: 8px;
-  box-shadow: 0 4px 18px rgba(2,6,23,0.18);
+  box-shadow: 0 4px 18px rgba(2, 6, 23, 0.18);
   margin-bottom: 18px;
 
 }
 
-.dashboard{
+.dashboard {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
-  font-weight: 800;
+  font-weight: bold;
   font-size: 32px;
 
 }
 
-.loandetails-header{
+.loandetails-header {
   background: #ffffff;
   color: #0f172a;
   /* tighter header padding for compact layout */
@@ -29,35 +30,44 @@
   align-items: center;
   justify-content: space-between;
   border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(2,6,23,0.04);
+  box-shadow: 0 1px 4px rgba(2, 6, 23, 0.04);
   margin-bottom: 12px;
+}
+
+/* Container that wraps loan details (table + header) */
+.loandetails-container {
+  /* keep the header full-width; we'll inset only the framed table below */
+  box-sizing: border-box;
 }
 
 /* Table / grid spacing under the header */
 .loandetails-table {
-  
+
   border-collapse: collapse;
-  margin: 8px 10px 0 10px; /* top:8px, left/right:10px to match header */
+  margin: 8px 10px 0 10px;
+  /* top:8px, left/right:10px to match header */
   box-sizing: border-box;
 }
 
 .loandetails-table th,
-.loandetails-table td{
-  padding: 8px 12px; /* tighter cell padding */
+.loandetails-table td {
+  padding: 8px 12px;
+  /* tighter cell padding */
   text-align: left;
   border-bottom: 1px solid #eef2f7;
   color: #374151;
 }
 
 /* Utility: make header text stand out */
-.dashborad_header .dashboard > div:first-child,
-.loandetails-header > div:first-child{
+.dashborad_header .dashboard>div:first-child,
+.loandetails-header>div:first-child {
   font-size: 18px;
   letter-spacing: 0.2px;
+  font-weight: bold;
 }
 
 /* Make buttons consistent when using classes or inline styles */
-.button-primary{
+.button-primary {
   background: #0b5cff;
   color: #fff;
   border: none;
@@ -67,7 +77,7 @@
   font-weight: 700;
 }
 
-.button-ghost{
+.button-ghost {
   background: transparent;
   color: #0f172a;
   border: 1px solid #cbd5e1;
@@ -75,59 +85,76 @@
   border-radius: 8px;
   cursor: pointer;
 }
+
 /* Make the top dashboard header stick to the top when scrolling */
-.dashborad_header{
+.dashborad_header {
   position: sticky;
   top: 0;
-  z-index: 1000; /* ensure it stays above page content */
+  z-index: 1000;
+  /* ensure it stays above page content */
 }
 
 /* Add spacing to the page content so it doesn't sit under the fixed header */
 /* Apply this to a content wrapper in your page. If you don't have one, add a class like .page-content to the main content container. */
-.page-content{
-  padding-top: 72px; /* adjust to match header height + desired gap */
+.page-content {
+  padding-top: 72px;
+  /* adjust to match header height + desired gap */
 }
 
 /* Full-width background sections (like dashboard) with centered content */
-.fullwidth-section{
+.fullwidth-section {
   width: 100%;
   left: 0;
   right: 0;
-  background: #fff; /* default background, can be overridden */
-  box-shadow: 0 1px 6px rgba(2,6,23,0.04);
+  background: #fff;
+  /* default background, can be overridden */
+  box-shadow: 0 1px 6px rgba(2, 6, 23, 0.04);
 }
 
-.fullwidth-section > .container{
-  max-width: 1200px; /* same as header for visual consistency */
+.fullwidth-section>.container {
+  max-width: 1200px;
+  /* same as header for visual consistency */
   margin: 0 auto;
   /* give horizontal breathing room on large screens */
-  padding: 20px 24px; /* left/right spacing controls page edges */
+  padding: 20px 24px;
+  /* left/right spacing controls page edges */
 }
 
 /* Example: apply to user experience area to span full viewport */
-.userexperience{
-  border-radius: 0; /* match full-width look */
+.userexperience {
+  border-radius: 0;
+  /* match full-width look */
 }
 
 /* Ensure the main content wrapper adds horizontal padding so inner cards/table keep spacing */
-.page-content{
-  padding-top: 72px; /* keep existing top offset */
+.page-content {
+  padding-top: 72px;
+  /* keep existing top offset */
   padding-left: 24px;
   padding-right: 24px;
 }
 
 @media (max-width: 960px) {
-  .fullwidth-section > .container{
+  .fullwidth-section>.container {
     max-width: calc(100% - 32px);
     padding: 12px;
   }
-  .page-content{
+
+  .page-content {
     padding-left: 12px;
     padding-right: 12px;
   }
+
+  /* reduce the inset for the framed table area on medium/smaller screens */
+  .frame {
+    margin: 0 12px;
+  }
 }
+
 @media (max-width: 640px) {
-  .dashboard, .loandetails-header{
+
+  .dashboard,
+  .loandetails-header {
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
@@ -136,18 +163,19 @@
 
 /* RoleSelector header when viewerMode is active */
 .viewer-header {
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
 }
+
 .viewer-close-btn,
 .card-close-btn {
-	background: transparent;
-	border: none;
-	cursor: pointer;
-	font-size: 20px;
-	line-height: 1;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
 }
 
 /* New classes migrated from inline styles in DashBoard.jsx */
@@ -161,7 +189,7 @@
   display: block;
 }
 
-.addBtn{
+.addBtn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -177,20 +205,25 @@
   cursor: pointer;
 }
 
-.frame{
+.frame {
   box-sizing: border-box;
   border: 1px solid #d1d5db;
-  width: 100%;
+
   border-radius: 1px;
   background: #fff;
+  /* inset the table area from the page edges while keeping the header full width */
+  margin: 0 24px;
+  overflow: hidden;
 }
 
-.tableWrap{
+.tableWrap {
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
+  /* allow table content to scroll horizontally inside this box */
   overflow-y: visible;
-  padding: 0 10px;
+  padding: 0 6px;
+  /* small internal padding, keep scroll area inside container */
   box-sizing: border-box;
 }
 
@@ -200,21 +233,25 @@
    - IE/Edge legacy: -ms-overflow-style
 */
 .tableWrap {
-  -ms-overflow-style: none; /* IE and Edge */
-  scrollbar-width: none; /* Firefox */
-}
-.tableWrap::-webkit-scrollbar {
-  height: 0; /* hide horizontal scrollbar in WebKit browsers */
+  -ms-overflow-style: none;
+  /* IE and Edge */
+  scrollbar-width: none;
+  /* Firefox */
 }
 
-.loandetails-table{
+.tableWrap::-webkit-scrollbar {
+  height: 0;
+  /* hide horizontal scrollbar in WebKit browsers */
+}
+
+.loandetails-table {
   width: 100%;
   border-collapse: collapse;
   border-spacing: 0;
   table-layout: fixed;
 }
 
-.loandetails-table .th{
+.loandetails-table .th {
   border-bottom: 1px solid #e5e7eb;
   text-align: left;
   color: #111827;
@@ -223,13 +260,13 @@
   word-wrap: break-word;
 }
 
-.loandetails-table .td{
+.loandetails-table .td {
   border-top: 1px solid #e5e7eb;
   padding: 10px;
   word-wrap: break-word;
 }
 
-.idCol{
+.idCol {
   width: 120px;
   min-width: 120px;
   max-width: 120px;
@@ -237,7 +274,7 @@
   white-space: nowrap;
 }
 
-.lastCol{
+.lastCol {
   width: 120px;
   min-width: 120px;
   max-width: 120px;
@@ -247,7 +284,7 @@
 }
 
 /* Status column: wider and left-aligned to avoid overlap with action buttons */
-.statusCol{
+.statusCol {
   width: 200px;
   min-width: 140px;
   max-width: 320px;
@@ -258,19 +295,26 @@
   text-overflow: ellipsis;
 }
 
-.td.statusCol { vertical-align: middle; }
+.td.statusCol {
+  vertical-align: middle;
+}
 
-.lastCol { padding-left: 8px; padding-right: 8px; }
+.lastCol {
+  padding-left: 8px;
+  padding-right: 8px;
+}
 
-.viewBtn{ margin-left: 6px; }
+.viewBtn {
+  margin-left: 6px;
+}
 
-.emptyCell{
+.emptyCell {
   padding: 16px;
-  text-align: center;
+  text-align: center !important;
   color: #666;
 }
 
-.viewBtn{
+.viewBtn {
   padding: 6px 10px;
   border: 1px solid #000;
   background: #fff;
@@ -278,6 +322,6 @@
   border-radius: 4px;
 }
 
-.attachCount{
+.attachCount {
   color: #374151;
 }

@@ -10,13 +10,8 @@
     "Password": "$2a$11$HXW8/Ne39.8rIHfMtIeFFe2U5.7.IN7sAE3N33aa9Dr.qwpz1R7Gy"
   },
   {
-    "Username": "Sam",
-    "Email": "sam@gmail.com",
-    "Password": "$2a$11$EC7ZKWG7FitjYAI4kgLNqOsa6CIrICC/gIgsgO875XwuxiEo2jP.6"
-  },
-  {
-    "Username": "John",
-    "Email": "John@gmail.com",
-    "Password": "$2a$11$XvR3tucmBQJhMCterzW6mu4RziBSvCFiy7ZRpy4CC1yBo/3j.TnIa"
+    "Username": "Customer1",
+    "Email": "Customer1@gamil.com",
+    "Password": "$2a$11$jT6IgGAxuBquY4ZDda32yOmtTOh6Qvb1L1EItaVA1Y1msKQq1RL3y"
   }
 ]
