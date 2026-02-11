@@ -318,18 +318,6 @@ public class AuthenticationController : ControllerBase
                                     searchKey = fileNameKey.Substring(0, idx);
                             }
                         }
-                        else
-                        {
-                            idx = fileNameKey.IndexOf("Sanction", StringComparison.OrdinalIgnoreCase);
-                            if (idx > 0)
-                            {
-                                var lastUnd = fileNameKey.LastIndexOf('_', idx - 1);
-                                if (lastUnd >= 0)
-                                    searchKey = fileNameKey.Substring(0, lastUnd);
-                                else
-                                    searchKey = fileNameKey.Substring(0, idx);
-                            }
-                        }
                     }
                 }
                 existing = list.FirstOrDefault(x =>
