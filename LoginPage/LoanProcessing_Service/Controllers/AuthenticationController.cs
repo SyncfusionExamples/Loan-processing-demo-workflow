@@ -290,6 +290,12 @@ public class AuthenticationController : ControllerBase
             if (!string.IsNullOrWhiteSpace(fileNameKey))
             {
                 var searchKey = fileNameKey;
+                existing = list.FirstOrDefault(x =>
+                    !string.IsNullOrWhiteSpace(x.FileName) &&
+                    string.Equals(x.FileName.Trim(), searchKey, StringComparison.OrdinalIgnoreCase));
+
+
+                if (fileNameKey.IndexOf("Sanction", StringComparison.OrdinalIgnoreCase) >= 0 && status == "SIGN_REQUIRED" && existing == null)
                 if (fileNameKey.IndexOf("Sanction", StringComparison.OrdinalIgnoreCase) >= 0 && status == "SIGN_REQUIRED")
                 {
                     if (fileNameKey.IndexOf("Sanction", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -298,6 +304,19 @@ public class AuthenticationController : ControllerBase
                         if (idx >= 0)
                         {
                             searchKey = fileNameKey.Substring(0, idx);
+                        }
+                        else
+                        {
+                            // fallback: find "Sanction" and trim at previous underscore
+                            idx = fileNameKey.IndexOf("Sanction", StringComparison.OrdinalIgnoreCase);
+                            if (idx > 0)
+                            {
+                                var lastUnd = fileNameKey.LastIndexOf('_', idx - 1);
+                                if (lastUnd >= 0)
+                                    searchKey = fileNameKey.Substring(0, lastUnd);
+                                else
+                                    searchKey = fileNameKey.Substring(0, idx);
+                            }
                         }
                         else
                         {
@@ -387,16 +406,6 @@ public class AuthenticationController : ControllerBase
                     !string.IsNullOrWhiteSpace(x.FileName) &&
                     string.Equals(x.FileName.Trim(), incomingFile, StringComparison.OrdinalIgnoreCase));
             }
-
-            // // 3) suffix match: filename ends with _<docId> or contains it
-            // if (entry == null && !string.IsNullOrWhiteSpace(incomingFile))
-            // {
-            //     var suffix = "_" + incomingDoc;
-            //     entry = list.FirstOrDefault(x =>
-            //         !string.IsNullOrWhiteSpace(x.FileName) &&
-            //         (x.FileName.Trim().EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
-            //          || x.FileName.Trim().IndexOf(suffix, StringComparison.OrdinalIgnoreCase) >= 0));
-            // }
 
             // do not create a new entry here — return NotFound so client can handle
             if (entry == null)

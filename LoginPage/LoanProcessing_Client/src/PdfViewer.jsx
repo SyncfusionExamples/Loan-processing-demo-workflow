@@ -39,7 +39,8 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
     const [modalLoading, setModalLoading] = useState(false)
     const [isAttachmentViewing, setIsAttachmentViewing] = useState(false)
     // allow submit only when fields are complete and status is not already SUBMITTED
-    const canSubmit = showBtn && loanStatus !== LoanStatus.SUBMITTED
+    const canSubmit = showBtn;
+    ///PDF Viewer Modules
     // Enable attachment operations: 
     // - Loan Officer: can manage when reviewing (SUBMITTED, UNDER_REVIEW states)
     // - Customer: can manage when document has NO status (initial creation) OR when INFO_REQUIRED (additional info requested)
@@ -62,7 +63,6 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         Annotation,
         Print
     ]
-
     // Build toolbar groups using Syncfusion's toolbar group keys
     const allGroups = [
         'OpenOption',
@@ -79,9 +79,8 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         'AnnotationEditTool',
         'FormDesignerEditTool',
     ]
-
     // Remove these groups for everyone
-    const removeAlways = ['OpenOption', 'UndoRedoTool', 'DownloadOption']
+    const removeAlways = [ 'OpenOption','UndoRedoTool', 'DownloadOption']
     // Remove these for Customer
     const removeForCustomer = ['AnnotationEditTool', 'PrintOption', 'FormDesignerEditTool', 'SubmitForm']
     // Build toolbar groups using a simple loop for clarity
@@ -93,7 +92,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         // skip groups not allowed for customers
         if ((role !== 'Manager' && role !== 'Loan Officer') && removeForCustomer.includes(g)) continue
         toolbarGroups.push(g)
-        if ((role !== 'Manager' && role !== 'Loan Officer') && pdfFileName.toLowerCase().includes("sanction") && loanStatus === LoanStatus.APPROVED) {
+        if (pdfFileName.toLowerCase().includes("sanction") && loanStatus === LoanStatus.APPROVED) {
             toolbarGroups.push('DownloadOption');
         }
     }
@@ -130,12 +129,10 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                 return
             }
             const blob = await resp.blob()
-
             // revoke previous blob URL (simple global track) to avoid memory leak
             try { if (window._lastPdfBlobUrl) URL.revokeObjectURL(window._lastPdfBlobUrl) } catch (e) { }
             const blobUrl = URL.createObjectURL(blob)
             window._lastPdfBlobUrl = blobUrl
-
             // Try viewer.load(), then viewer.open()
             if (viewer.load) viewer.load(blobUrl, null)
 
@@ -147,7 +144,6 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             console.error('Error loading PDF:', err)
         }
     }
-
     //Get Document ID
     function getDocumentId(pdfFileName, fileId) {
         const base = pdfFileName.trim();
@@ -155,15 +151,13 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             return String(fileId);
         }
         // Try to extract the trailing numeric token
-        // Examples matched:
-        // "Customer1_1001" -> "1001"
+        // Example: "Customer1_1001" -> "1001"
         const m = base.match(/_(\d+)(?:_[A-Za-z].*)?$/);
         if (m && m[1]) {
             return String(m[1]);
         }
         return String(fileId);
     }
-
     // Convert a Blob to base64 data URL
     const blobToBase64 = (blob) => new Promise((resolve, reject) => {
         const reader = new FileReader()
@@ -187,10 +181,8 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             removeReadOnly();
             const blob = await viewer.saveAsBlob();
             const base64 = await blobToBase64(blob);
-
             // Use the same API base as resourcesLoaded
             const base = process.env.REACT_APP_API_URL || 'http://localhost:5063';
-
             // Use the current `count` as the file id so client and server agree
             const fileId = count;
             let fileName;
@@ -201,7 +193,6 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             } else {
                 fileName = pdfFileName
             }
-
             const user = JSON.parse(localStorage.getItem('user') || 'null');
             const username = user?.username || user?.name || null;
             const documentId = getDocumentId(pdfFileName, fileId);
@@ -213,11 +204,9 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ base64, fileName, username, status, documentId, customerName, attachments: attachmentsPayload }),
             });
-
             if (!resp.ok) {
                 console.error('SaveFilledForms failed', resp.status);
             }
-
             // Prefer server-confirmed filename if returned, fallback to our constructed name
             let savedName = fileName;
             let json;
@@ -302,15 +291,14 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
     };
 
-    /* ---- Named button handlers (avoid inline logic in JSX) ---- */
+    //Handle Reject Logic
     const handleReject = () => {
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.REJECTED;
         setLoanStatus(LoanStatus.REJECTED)
         setViewerMode(false)
+        handleSubmit();
     }
-
-    // change to your template filename on server
-
+    // //Handle Approval Logic
     const handleApproval = async () => {
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED;
         if (!showBtn) return
@@ -332,7 +320,6 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
         setSanctionValues(values)
     }
-
     // When loanStatus becomes APPROVED and we have sanctionValues, load the sanction template
     useEffect(() => {
         if (loanStatus === LoanStatus.APPROVED && sanctionValues) {
@@ -340,14 +327,14 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             setSanctionMode(true)
         }
     }, [loanStatus, sanctionValues])
-
+    //Handle Sign Request Logic
     const handleSignRequest = async () => {
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.SIGN_REQUIRED;
         setLoanStatus(LoanStatus.SIGN_REQUIRED);
         handleSubmit();
         setSanctionMode(false);
     }
-
+    //Handle Finish Logic
     const handleFinish = () => {
         // simply close viewer and mark approved
         const viewer = viewerRef.current
@@ -362,7 +349,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         setViewerMode(false)
         setSanctionMode(false)
     }
-
+    //Handle Info Required Logic
     const handleInfoRequired = () => {
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.INFO_REQUIRED;
         removeReadOnly();
@@ -370,7 +357,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         handleSubmit();
         setViewerMode(false)
     }
-
+    //Handle Pending Approval Logic
     const handlePendingApproval = () => {
         if (!showBtn) return
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.PENDING_APPROVAL;
@@ -399,18 +386,15 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             // Other field types require a non-empty value
             if (!value) return false
         }
-        // Ensure every radio/checkbox group has at least one truthy member
         for (const vals of Object.values(radioGroups)) {
             if (!vals.some(Boolean)) return false
         }
         return true
     }
-
     const evaluateFields = () => {
         try {
             const api = viewerRef.current
             if (!api) return
-
             // Syncfusion instance may expose methods directly or under `pdfViewer`.
             const getter = api.retrieveFormFields || (api.pdfViewer && api.pdfViewer.retrieveFormFields)
             const fields = (getter && getter.call(api)) || []
@@ -448,7 +432,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
 
     }
-
+   //Make PDF Form Fields Read Only
     function readOnly() {
         const viewer = viewerRef.current
         if (!viewer) return;
@@ -463,7 +447,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                 }
 
             } else {
-                if ((loanStatus === LoanStatus.UNDER_REVIEW || loanStatus === LoanStatus.INFO_REQUIRED) && forms[i].value === "") {
+                if (((loanStatus === LoanStatus.UNDER_REVIEW || loanStatus === LoanStatus.INFO_REQUIRED) && forms[i].value === "") || ((loanStatus === LoanStatus.PENDING_APPROVAL || loanStatus === LoanStatus.INFO_REQUIRED) && role === "Loan Officer" && forms[i].name === "LoanOfficerSignature")) {
                     forms[i].isReadOnly = false;
                     viewer.formDesignerModule.updateFormField(forms[i], { isReadOnly: false });
                 } else {
@@ -474,7 +458,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
 
         }
     }
-
+    //Remove Read only for PDF Form Field
     function removeReadOnly() {
         const viewer = viewerRef.current
         if (!viewer) return;
@@ -483,7 +467,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             viewer.formDesignerModule.updateFormField(forms[i], { isReadOnly: false });
         }
     }
-
+    //Update the Sanction letter fields values
     function UpdateForm() {
         const viewer = viewerRef.current
         if (!viewer) return;
@@ -505,7 +489,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
         setShowBtn(false)
     }
-
+    //Check the Manger signature value before approval
     function checkManagerSignature() {
         try {
             const viewer = viewerRef.current
@@ -519,12 +503,13 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             setFinishEnabled(false)
         }
     }
+    //Set the File name for the document
     function downloadStart(args) {
         const viewer = viewerRef.current
         if (!viewer) return;
         viewerRef.current.downloadFileName = pdfFileName;
     }
-
+    //Based on Role make the Signature field read only
     function MakeSignatureReadOnly() {
         if ((role !== "Manager" && role !== "Loan Officer")) {
             const viewer = viewerRef.current
@@ -1164,7 +1149,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                                     <div key={file.id} className="attachment-item" style={{ padding: '8px 6px', borderBottom: '1px solid #eee' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                                             <div style={{ flex: 1, paddingRight: 10 }}>
-                                                <div onClick={() => { setViewingFile(file); setIsAttachmentViewing(true); }} style={{ fontWeight: 'normal', marginTop: 6, marginBottom: 4, wordBreak: 'break-word', cursor: 'pointer' }} title="Open attachment">📎 {file.originalName || file.name}</div>
+                                                <div onClick={() => { setViewingFile(file); setIsAttachmentViewing(true); }} style={{ fontWeight: 'normal', marginTop: 6, marginBottom: 4, wordBreak: 'break-word', cursor: 'pointer' }} title="Open attachment">?? {file.originalName || file.name}</div>
                                                 <div style={{ fontSize: 12, color: '#666' }}>Size: {file.size}</div>
                                                 <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>Uploaded: {file.uploadedAt}</div>
                                             </div>
@@ -1181,7 +1166,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                                                     lineHeight: 1,
                                                     marginTop: 8
                                                 }}
-                                            >✕</button>
+                                            >?</button>
                                         </div>
                                     </div>
                                 ))
@@ -1190,7 +1175,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                             {viewingFile && (
                                 <div onClick={closeModal} className="attachment-modal-overlay" style={{ position: 'fixed', left: 0, top: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
                                     <div onClick={(e) => e.stopPropagation()} className="attachment-modal" style={{ width: '80%', height: '80%', background: '#fff', borderRadius: 6, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                                        <button onClick={closeModal} className="icon-button" title="Close" style={{ position: 'absolute', right: 10, top: 6, zIndex: 10, fontSize: 20 }}>✕</button>
+                                        <button onClick={closeModal} className="icon-button" title="Close" style={{ position: 'absolute', right: 10, top: 6, zIndex: 10, fontSize: 20 }}>?</button>
                                         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                                             <div style={{ padding: 12, textAlign: 'center', fontWeight: 500, borderBottom: '1px solid #eee' }}>{viewingFile.originalName || viewingFile.name}</div>
                                             <div style={{ flex: 1, minHeight: 0 }}>

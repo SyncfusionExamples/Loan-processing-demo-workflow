@@ -1,4 +1,4 @@
-import React,{ useState, useEffect, useRef,  } from 'react';
+import React, { useState, useEffect, useRef, } from 'react';
 import Authentication from './Authentication';
 import './DashBoard.css'
 import PdfViewer from './PdfViewer.jsx'
@@ -42,6 +42,7 @@ const DashBoard = () => {
   }, [nextId]);
 
   const prevNextId = useRef(nextId);
+
   //Update the Row When the Loan application added
   useEffect(() => {
     if (prevNextId.current !== nextId) {
@@ -102,13 +103,10 @@ const DashBoard = () => {
         const mapped = list.map(item => {
           const docId = item.documentId || item.documentid || item.DocumentId || '';
           const rawName = (item.fileName || item.file || item.FileName || item.customerName || item.customer || '').toString().trim();
-
           // remove .pdf extension if present
           const noExt = rawName.replace(/\.pdf$/i, '');
-
           // remove any existing trailing _<docId> so we don't duplicate
           const baseName = docId ? noExt.replace(new RegExp(`_${docId}$`, 'i'), '') : noExt;
-
           // final display: baseName + _docId (only if docId present)
           let displayName = baseName;
           if (!baseName.toLowerCase().includes("sanction")) {
@@ -127,7 +125,6 @@ const DashBoard = () => {
         console.warn("loadSavedFiles error", e);
       }
     };
-
     loadSavedFiles();
     const handler = () => loadSavedFiles();
     window.addEventListener('userFilesChanged', handler);
@@ -142,12 +139,12 @@ const DashBoard = () => {
     );
   }, [pdfFileName, loanStatus]);
 
- //Change the actionBar state when PDF Viewer open and close
+  //Change the actionBar state when PDF Viewer open and close
   useEffect(() => {
     if (!viewerMode) setActionBar(true);
   }, [viewerMode]);
-  
-   // Ensure the viewer shows the file associated with the clicked row
+
+  // Ensure the viewer shows the file associated with the clicked row
   const onView = (row) => {
     if (row && row.customer) setPdfFileName(row.customer)
     if (row && row.status) setLoanStatus(row.status)
@@ -159,10 +156,30 @@ const DashBoard = () => {
     const clickedName = (row && row.customer) ? String(row.customer) : '';
     const isSanction = clickedName.toLowerCase().includes('sanction');
     setSanctionMode(Boolean(isSanction));
-    if ((loggedInUser.username !== "Manager" && loggedInUser.username !== "Loan Officer") && row && (row.status === LoanStatus.SUBMITTED || row.status === LoanStatus.REJECTED || row.status === LoanStatus.PENDING_APPROVAL || row.status === LoanStatus.APPROVED)) {
-      setActionBar(false);
-    }
+    changeActionBar(row);
+    setActionBar(Boolean(changeActionBar(row)));
   };
+
+  // Decide action bar visibility based on role, status and whether this is a sanction document;
+  function changeActionBar(row) {
+    const role = loggedInUser?.username;
+    const status = row?.status;
+    const name = (row && row.customer) ? String(row.customer) : '';
+    const sanction = name.toLowerCase().includes('sanction');
+    if (status === LoanStatus.REJECTED) {
+      return false;
+    }
+    if (role === 'Manager') {
+      // Manager only sees the action bar for Pending Approval
+      return status === LoanStatus.PENDING_APPROVAL;
+    }
+    if (role === 'Loan Officer') {
+      // Loan Officer should not see the action bar when viewing a sanction letter
+      return !sanction;
+    }
+    // Customers: hide the bar for submitted/rejected/pending/approved statuses
+    return !(status === LoanStatus.SUBMITTED || status === LoanStatus.PENDING_APPROVAL || status === LoanStatus.APPROVED);
+  }
 
   //Update the JSON file on the server based on the Status
   const didMount = useRef(false);
@@ -238,7 +255,7 @@ const DashBoard = () => {
     } catch {/* ignore */ }
   }, []);
 
-
+  //Remove the Item when Looged Out
   const logout = () => {
     localStorage.removeItem("user");
     setUser(null);
@@ -246,7 +263,7 @@ const DashBoard = () => {
   if (!loggedInUser) {
     return <Authentication onLogin={setUser} />;
   }
-
+  //Render the PDF Viewer When ViewMode is true
   if (viewerMode) {
     return (
       <div>
@@ -258,13 +275,13 @@ const DashBoard = () => {
       </div>
     )
   }
-
+ 
   return (
     <div className="dashboard-page">
       {/* Header bar (blue) */}
       <div className='dashborad_header'>
         <div className='dashboard'>
-          <div>DASHBOARD</div>
+          <div>{loggedInUser ? `Hi ${loggedInUser.username}` : 'Dashboard'}</div>
           <div>
             <button type="button" onClick={logout} className="addBtn">
               Logout
@@ -277,7 +294,7 @@ const DashBoard = () => {
       </div>
       <div className="loandetails-container">
         <div className='loandetails-header'>
-          <div >Loan Details</div>
+          <div >Loan Dashboard</div>
           {
             loggedInUser && (loggedInUser.username !== "Manager" && loggedInUser.username !== "Loan Officer") && (
               <button
@@ -306,7 +323,7 @@ const DashBoard = () => {
               <thead>
                 <tr>
                   <th className="th idCol">Loan ID</th>
-                  <th className="th">Customer Name</th>
+                  <th className="th">Application Name</th>
                   <th className="th statusCol">Status</th>
                   <th className="th lastCol">Action</th>
                   <th className="th lastCol">Attachments</th>
@@ -315,8 +332,8 @@ const DashBoard = () => {
               <tbody>
                 {rows.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="emptyCell">
-                      No rows yet. Click the “Create +” button to add.
+                    <td colSpan={5} className="emptyCell">
+                      No loan applications created. Click "Create +" to submit a new application.
                     </td>
                   </tr>
                 ) : (

@@ -1,11 +1,15 @@
 /* Syncfusion PDF Viewer layout fixes: prevent horizontal overflow */
-.e-pdfviewer, .e-pdfviewer-container {
-  box-sizing: border-box;
-  max-width: 100vw !important;
-  overflow-x: hidden !important;
+.e-pdfviewer,
+.e-pdfviewer-container {
+	box-sizing: border-box;
+	max-width: 100vw !important;
+	overflow-x: hidden !important;
 }
-.e-pdfviewer-toolbar, .e-pdfviewer-container, .e-pv-viewer {
-  width: 100% !important;
+
+.e-pdfviewer-toolbar,
+.e-pdfviewer-container,
+.e-pv-viewer {
+	width: 100% !important;
 }
 
 /* PdfViewer component classes */
@@ -15,7 +19,7 @@
 	display: flex;
 	flex-direction: column;
 	overflow-x: hidden;
-    
+
 }
 .add-attachment-icon::before {
     content: "\e900";
@@ -40,7 +44,7 @@
 	width: 100%;
 	/* allow absolute overlays inside viewer area */
 	position: relative;
-    padding: 10px 20px;
+	padding: 10px 20px;
 }
 
 .pdf-component {
@@ -53,7 +57,8 @@
 	bottom: 0px;
 	left: 20px;
 	right: 20px;
-	height: 50px; /* bar height */
+	height: 50px;
+	/* bar height */
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -61,59 +66,78 @@
 	pointer-events: auto;
 	background: rgba(195, 193, 193, 0.682);
 	border-radius: 8px;
-	box-shadow: 0 6px 18px rgba(2,6,23,0.05);
+	box-shadow: 0 6px 18px rgba(2, 6, 23, 0.05);
 }
 
 .pdf-actionbar-inner {
 	width: 100%;
 	display: flex;
-	justify-content: flex-end; 
-	align-items: center; 
-	padding-right: 40px; 
+	justify-content: flex-end;
+	align-items: center;
+	padding-right: 40px;
 }
 
 .pdf-actionbar .pdf-action-button {
-	height: 42px; /* within 50-80px range */
+	height: 42px;
+	/* within 50-80px range */
 	min-width: 140px;
 	border-radius: 10px;
-	border: none; /* remove default button border */
+	border: none;
+	/* remove default button border */
 	font-size: 18px;
-	box-shadow: 0 6px 18px rgba(2,6,23,0.08);
-	margin: 0; /* remove default margins */
-	display: inline-flex; /* make button inline-flex */
-	align-items: center; /* center content vertically */
-	justify-content: center; /* center content horizontally */
-	line-height: 1; /* avoid baseline shifts */
+	box-shadow: 0 6px 18px rgba(2, 6, 23, 0.08);
+	margin: 0;
+	/* remove default margins */
+	display: inline-flex;
+	/* make button inline-flex */
+	align-items: center;
+	/* center content vertically */
+	justify-content: center;
+	/* center content horizontally */
+	line-height: 1;
+	/* avoid baseline shifts */
 	cursor: pointer;
 }
 
 /* Role-specific color variants */
 .pdf-action-button.approve {
-	background: #bfe0ff; /* light blue */
+	background: #bfe0ff;
+	/* light blue */
 	color: #0b3a66;
 }
+
 .pdf-action-button.reject {
-	background: #ede9e9; /* light red */
+	background: #ede9e9;
+	/* light red */
 	color: #f2083f;
-	border: none; /* ensure no border (fix black border issue) */
+	border: none;
+	/* ensure no border (fix black border issue) */
 	outline: none;
 }
+
 .pdf-action-button.final {
-	background:  #f2f21b;; /* light yellow */
+	background: #f2f21b;
+	;
+	/* light yellow */
 	color: #343432;
 }
+
 .pdf-action-button.request {
-	background:  #ede9e9;; /* light yellow */
+	background: #ede9e9;
+	;
+	/* light yellow */
 	color: #393938;
 }
 
 /* spacing between multiple action buttons */
-.pdf-actionbar .pdf-action-button + .pdf-action-button {
+.pdf-actionbar .pdf-action-button+.pdf-action-button {
 	margin-left: 12px;
 }
 
 /* Ensure document and app root have full height to allow percentage children */
-html, body, #root {
+html,
+body,
+#root {
 	height: 100%;
 	margin: 0;
 }
@@ -124,9 +148,12 @@ html, body, #root {
 }
 
 /* Disabled button baseline - use neutral gray for initial disabled state */
-.button.disabled, .button:disabled {
-	background: #e7eaef !important; /* gray-200 */
-	color: #6b7280 !important; /* gray-600 */
+.button.disabled,
+.button:disabled {
+	background: #e7eaef !important;
+	/* gray-200 */
+	color: #6b7280 !important;
+	/* gray-600 */
 	cursor: not-allowed !important;
 	opacity: 1;
 	border: none;
@@ -135,44 +162,53 @@ html, body, #root {
 
 /* Enabled / disabled visual styles for pdf action buttons */
 .pdf-action-button.enabled {
-	background: #1e40af; /* dark blue */
+	background: #1e40af;
+	/* dark blue */
 	color: #ffffff;
-	box-shadow: 0 2px 8px rgba(30,64,175,0.15);
+	box-shadow: 0 2px 8px rgba(30, 64, 175, 0.15);
 	transition: background 160ms ease;
 }
+
 .pdf-action-button.enabled:hover {
 	background: #1b3aa0;
 }
+
 .pdf-action-button.disabled {
-	background: #e5e7eb; /* gray-200 */
-	color: #6b7280; /* gray-600 */
+	background: #e5e7eb;
+	/* gray-200 */
+	color: #6b7280;
+	/* gray-600 */
 	cursor: not-allowed;
 	box-shadow: none;
 }
 
 /* Header overlay showing filename and close control */
 .pdf-header {
-	position: relative; /* place above the viewer toolbar */
+	position: relative;
+	/* place above the viewer toolbar */
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	z-index: 1300;
-	 background: linear-gradient(90deg, #5b21b6 0%, #6d28d9 100%);/* deep purple gradient */
-  color: #ffffff;
-  padding: 18px 20px;
-  border-radius: 8px;
-  box-shadow: 0 4px 18px rgba(2,6,23,0.18);
-  margin-bottom: 10px;
-  
+	background: linear-gradient(90deg, #5b21b6 0%, #6d28d9 100%);
+	/* deep purple gradient */
+	color: #ffffff;
+	padding: 18px 20px;
+	border-radius: 8px;
+	box-shadow: 0 4px 18px rgba(2, 6, 23, 0.18);
+	margin-bottom: 10px;
+
 }
+
 .pdf-title {
 	font-weight: 600;
-	color:  rgba(255,255,255,0.95);
+	color: rgba(255, 255, 255, 0.95);
 	padding: 6px 10px;
 	border-radius: 8px;
 }
+
 .pdf-close {
-	background: rgba(255,255,255,0.95);
+	background: rgba(255, 255, 255, 0.95);
 	border: 1px solid #e6eefc;
 	height: 36px;
 	width: 36px;
@@ -182,6 +218,7 @@ html, body, #root {
 	justify-content: center;
 	cursor: pointer;
 }
+
 .pdf-close:hover {
 	background: #fff;
 }

@@ -17,8 +17,18 @@ body {
   left: 50%;
   transform: translate(-50%, -50%);
 }
-.auth-title { text-align: center; margin-bottom: 30px; }
-.auth-label { display: block; margin-bottom: 8px; font-weight: bold; }
+
+.auth-title {
+  text-align: center;
+  margin-bottom: 30px;
+}
+
+.auth-label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: bold;
+}
+
 .auth-input {
   width: 100%;
   padding: 10px;
@@ -27,6 +37,7 @@ body {
   border: 1px solid #ccc;
   box-sizing: border-box;
 }
+
 .auth-button {
   width: 100%;
   padding: 12px;
@@ -36,11 +47,33 @@ body {
   margin-top: 10px;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
-.auth-button.primary { background-color: #3f51b5; color: white; border: none; }
-.auth-button.primary:hover { background-color: #213292; }
-.auth-button.secondary { background-color: #f0f0f0; border: 1px solid #ccc; color: #333; }
-.auth-button.secondary:hover { background-color: #e0e0e0; border-color: #bbb; }
-.auth-message { color: red; margin-top: 15px; text-align: center; }
+
+.auth-button.primary {
+  background-color: #3f51b5;
+  color: white;
+  border: none;
+}
+
+.auth-button.primary:hover {
+  background-color: #213292;
+}
+
+.auth-button.secondary {
+  background-color: #f0f0f0;
+  border: 1px solid #ccc;
+  color: #333;
+}
+
+.auth-button.secondary:hover {
+  background-color: #e0e0e0;
+  border-color: #bbb;
+}
+
+.auth-message {
+  color: red;
+  margin-top: 15px;
+  text-align: center;
+}
 
 /* Header + Logout */
 .app-header {
@@ -52,6 +85,7 @@ body {
   background: #ffffff;
   border-bottom: 1px solid #e5e7eb;
 }
+
 .logout-btn {
   border: 1px solid #e5e7eb;
   background: #ffffff;
@@ -61,7 +95,10 @@ body {
   border-radius: 8px;
   cursor: pointer;
 }
-.logout-btn:hover { background: #f9fafb; }
+
+.logout-btn:hover {
+  background: #f9fafb;
+}
 
 /* Rectangle border for the DropDownList (non-overlapping outline) */
 .author-ddl.e-control-wrapper.e-input-group {
@@ -74,18 +111,23 @@ body {
   box-shadow: none !important;
   box-sizing: border-box;
 }
+
 .author-ddl.e-control-wrapper.e-input-group.e-input-focus,
 .author-ddl.e-control-wrapper.e-input-group:focus-within {
   outline-color: #666 !important;
 }
+
 .author-ddl-popup.e-popup {
-  margin-top: 8px !important; /* gap so popup won't overlap the outline */
+  margin-top: 8px !important;
+  /* gap so popup won't overlap the outline */
 }
+
 .author-ddl.e-control-wrapper.e-input-group .e-input,
 .author-ddl.e-control-wrapper.e-input-group input.e-input {
   box-shadow: none !important;
 }
 
 /* Viewer wrapper */
-.control-section { padding: 0 16px; }
-
+.control-section {
+  padding: 0 16px;
+}
