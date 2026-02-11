@@ -320,6 +320,7 @@ public class AuthenticationController : ControllerBase
                         }
                     }
                 }
+
                 existing = list.FirstOrDefault(x =>
                     !string.IsNullOrWhiteSpace(x.FileName) &&
                     string.Equals(x.FileName.Trim(), searchKey, StringComparison.OrdinalIgnoreCase));
