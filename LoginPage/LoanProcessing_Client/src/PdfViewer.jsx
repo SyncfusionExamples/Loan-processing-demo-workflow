@@ -26,7 +26,6 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
     }
     const [showBtn, setShowBtn] = useState(true)
     const [sanctionValues, setSanctionValues] = useState(null)
-    const [finishEnabled, setFinishEnabled] = useState(false)
     // allow submit only when fields are complete and status is not already SUBMITTED
     const canSubmit = showBtn;
     ///PDF Viewer Modules
@@ -326,10 +325,10 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
     // Handler called by viewer when form field properties change
     const onFormFieldPropertiesChange = (args) => {
         if (args && args.isValueChanged) {
-            evaluateFields()
-        }
-        if (sanctionMode) {
-            checkManagerSignature();
+            setTimeout(() => {
+             console.log(args);
+             evaluateFields()   
+            }, 100);
         }
     }
     // Also run initial evaluation when document loads
@@ -400,20 +399,6 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             }
         }
         setShowBtn(false)
-    }
-    //Check the Manger signature value before approval
-    function checkManagerSignature() {
-        try {
-            const viewer = viewerRef.current
-            if (!viewer) return
-            const forms = viewer.retrieveFormFields() || []
-            const sigField = forms.find(f => (f.name ?? f.fieldName ?? '').toString().toLowerCase() === 'managersignature')
-            const hasValue = sigField && (sigField.value ?? '').toString().trim() !== ''
-            setFinishEnabled(Boolean(hasValue))
-        } catch (e) {
-            console.warn('checkManagerSignature error', e)
-            setFinishEnabled(false)
-        }
     }
     //Set the File name for the document
     function downloadStart(args) {
@@ -489,7 +474,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                                             <button
                                                 className={`button pdf-action-button final`}
                                                 onClick={handleFinish}
-                                                disabled={!finishEnabled}
+                                                disabled={!showBtn}
                                             >
                                                 Finish
                                             </button>
