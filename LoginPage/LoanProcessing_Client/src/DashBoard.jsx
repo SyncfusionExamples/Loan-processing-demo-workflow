@@ -21,6 +21,9 @@ const DashBoard = () => {
   const [pdfFileName, setPdfFileName] = useState("Loan_Application_Form");
   const [sanctionMode, setSanctionMode] = useState(false)
   const [actionBar, setActionBar] = useState(true);
+  const [selectedLoanId, setSelectedLoanId] = useState(null);
+  const [attachmentsVersion, setAttachmentsVersion] = useState(0);
+  const [attachmentCounts, setAttachmentCounts] = useState({});
   
   //File Path of respective file
   const file = `wwwroot/pdfs/${pdfFileName}.pdf`
@@ -28,6 +31,7 @@ const DashBoard = () => {
     setPdfFileName("Loan_Application_Form");
     setViewerMode(true);
     setLoanStatus("");
+    setSelectedLoanId(String(nextId));
   };
 
   //Get the ID from the session storage
@@ -148,6 +152,7 @@ const DashBoard = () => {
     if (row && row.customer) setPdfFileName(row.customer)
     if (row && row.status) setLoanStatus(row.status)
     setViewerMode(true);
+    setSelectedLoanId(String(row?.id ?? ''));
     if (loggedInUser?.username === 'Loan Officer' && row?.status === LoanStatus.SUBMITTED) {
       setLoanStatus(LoanStatus.UNDER_REVIEW);
     }
@@ -161,6 +166,39 @@ const DashBoard = () => {
 
   //Update the JSON file on the server based on the Status
   const didMount = useRef(false);
+  // Listen for per-loan attachment count changes from other tabs/windows
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e && e.key && e.key.startsWith('attachmentsCount_')) {
+        setAttachmentsVersion(v => v + 1);
+      }
+    };
+    const onCustom = (e) => {
+      setAttachmentsVersion(v => v + 1);
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('attachmentsCountUpdated', onCustom);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('attachmentsCountUpdated', onCustom);
+    };
+  }, []);
+
+  // Trigger a refresh of counts when returning from viewer in same tab
+  useEffect(() => {
+    setAttachmentsVersion(v => v + 1);
+  }, [viewerMode]);
+
+  // Recompute attachment counts map whenever rows or attachmentsVersion change
+  useEffect(() => {
+    const map = {};
+    for (const r of rows) {
+      const key = `attachmentsCount_${r.id}`;
+      const v = sessionStorage.getItem(key) || localStorage.getItem(key);
+      map[r.id] = v ? parseInt(v, 10) || 0 : 0;
+    }
+    setAttachmentCounts(map);
+  }, [attachmentsVersion, rows]);
   useEffect(() => {
     if (!didMount.current) { didMount.current = true; return; }
     console.log('status effect ->', { loanStatus, pdfFileName });
@@ -216,7 +254,7 @@ const DashBoard = () => {
           <div className="pdf-title">{pdfFileName.replace(/_/g, ' ').replace(/\.pdf$/i, '')}</div>
           <button className="pdf-close" onClick={() => { setViewerMode(false); setLoanStatus(loanStatus) }} aria-label="Close viewer">✕</button>
         </div>
-        <PdfViewer file={file} role={loggedInUser.username} loanStatus={loanStatus} count={nextId} setFileCount={setNextId} setPdfFileName={setPdfFileName} setViewerMode={setViewerMode} setLoanStatus={setLoanStatus} pdfFileName={pdfFileName} sanctionMode={sanctionMode} setSanctionMode={setSanctionMode} actionBar={actionBar} />
+        <PdfViewer file={file} role={loggedInUser.username} loanStatus={loanStatus} count={nextId} setFileCount={setNextId} setPdfFileName={setPdfFileName} setViewerMode={setViewerMode} setLoanStatus={setLoanStatus} pdfFileName={pdfFileName} sanctionMode={sanctionMode} setSanctionMode={setSanctionMode} actionBar={actionBar} loanId={selectedLoanId} />
       </div>
     )
   }
@@ -297,12 +335,7 @@ const DashBoard = () => {
                         </button>
                       </td>
                       <td className="td idCol">
-                        {(() => {
-                          const key = `attachmentsCount_${r.id}`;
-                          const v = sessionStorage.getItem(key);
-                          const count = v ? parseInt(v, 10) || 0 : 0;
-                          return <span className="attachCount">({count})</span>;
-                        })()}
+                        <span className="attachCount">({attachmentCounts[r.id] || 0})</span>
                       </td>
                     </tr>
                   ))
