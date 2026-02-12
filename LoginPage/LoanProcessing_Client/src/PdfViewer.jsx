@@ -24,6 +24,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
     const modalViewerRef = useRef(null)
     const lastObjectUrlRef = useRef(null)
     const deletedAttachmentsRef = useRef(new Set()) // Track deleted attachment names
+    const alertedFieldsRef = useRef(new Set()) // Track fields we've already alerted about non-digit input
     // global variable to track last action invoked from this viewer
     if (typeof window !== 'undefined') {
         window.currentAction = window.currentAction || '';
@@ -38,6 +39,8 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
     const [modalSrc, setModalSrc] = useState(null)
     const [modalLoading, setModalLoading] = useState(false)
     const [isAttachmentViewing, setIsAttachmentViewing] = useState(false)
+    const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, fileId: null });
+    const contextMenuRef = useRef(null);
     // allow submit only when fields are complete and status is not already SUBMITTED
     const canSubmit = showBtn;
     ///PDF Viewer Modules
@@ -414,6 +417,159 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
     // Handler called by viewer when form field properties change
     const onFormFieldPropertiesChange = (args) => {
         if (args && args.isValueChanged) {
+            try {
+                const viewer = viewerRef.current;
+                if (viewer) {
+                    // Robust getter for fields list
+                    const getter = viewer.retrieveFormFields || (viewer.pdfViewer && viewer.pdfViewer.retrieveFormFields)
+                    const fields = (getter && getter.call(viewer)) || []
+
+                    // Determine target field name from args (support multiple argument shapes)
+                    const rawTargetName = (args && (
+                        (args.field && (args.field.name || args.field.fieldName)) ||
+                        args.name || args.fieldName || args.fullName
+                    )) || '';
+                    const targetName = (rawTargetName + '').toString().toLowerCase();
+                    if (targetName) {
+                        // If field name references numeric fields (date, phone, amount, tenure, etc.), enforce digits-only
+                        const numericKeywords = ['date','dob','dateofbirth','phone','mobile','contact','amount','tenure','number','no','age'];
+                        let isNumericField = numericKeywords.some(k => targetName.includes(k));
+                        // If the field is a signature field, skip numeric sanitization even if the name contains keywords
+                        const fieldTypeRaw = (args.field && (args.field.type || args.field.fieldType || '')) || '';
+                        const fieldType = (fieldTypeRaw + '').toString().toLowerCase();
+                        const isSignatureField = fieldType.includes('signature');
+                        if (isSignatureField && isNumericField) {
+                            console.debug('Skipping numeric sanitization for signature field', { targetName, fieldType });
+                            isNumericField = false;
+                        }
+                        if (isNumericField) {
+                            // Prefer value from args when available (handles multiple event shapes)
+                            const argValue = (args.value ?? args.newValue ?? args.field?.value ?? args.field?.fieldValue ?? '').toString();
+                            const argSanitized = argValue.replace(/\D/g, '');
+
+                            // Robust matching: field names in PDFs can be hierarchical (form1[0].#subform[0].dateOfBirth[0])
+                            const matchField = (ff) => {
+                                const fnRaw = ((ff.name || ff.fieldName || '') + '').toString().toLowerCase();
+                                if (!fnRaw) return false;
+                                // 1) exact match
+                                if (fnRaw === targetName) return true;
+                                // 2) compare last path segments (handles hierarchical names like form1[0].#subform[0].dateOfBirth[0])
+                                const fnLast = fnRaw.split(/\.|\[|\]/).filter(Boolean).pop() || fnRaw;
+                                const tgtLast = targetName.split(/\.|\[|\]/).filter(Boolean).pop() || targetName;
+                                if (fnLast === tgtLast) return true;
+                                // 3) boundary-aware endsWith (avoid generic includes which cause false positives)
+                                if (fnRaw.endsWith('.' + tgtLast) || fnRaw.endsWith('_' + tgtLast) || fnRaw.endsWith('/' + tgtLast) || fnRaw.endsWith(':' + tgtLast)) return true;
+                                // no loose includes — return false to avoid matching unrelated fields (e.g., 'date' -> 'dateofbirth')
+                                return false;
+                            };
+
+                            let f = fields.find(matchField) || null;
+                            if (!f) {
+                                // try last path segment fallback
+                                const lastSeg = targetName.split(/\.|\[|\]/).filter(Boolean).pop() || targetName;
+                                f = fields.find(ff => (((ff.name || ff.fieldName || '') + '').toString().toLowerCase() === lastSeg) || (((ff.name || ff.fieldName || '') + '').toString().toLowerCase().endsWith(lastSeg))) || null;
+                            }
+
+                            // helper: disallowed regex per field keyword (precompiled to avoid dynamic char-class issues)
+                            const getDisallowedRegex = (name) => {
+                                const n = (name || '').toString().toLowerCase();
+                                if (n.includes('phone') || n.includes('mobile') || n.includes('contact')) return /[^0-9+\-()\s]/g; // allow digits, + - ( ) and space
+                                if (n.includes('date') || n.includes('dob') || n.includes('dateofbirth')) return /[^0-9\/\-.]/g; // allow digits, / - .
+                                if (n.includes('amount') || n.includes('amt')) return /[^0-9\.,]/g; // allow digits, . ,
+                                return /[^0-9]/g; // default: digits only
+                            };
+
+                            if (f) {
+                                const raw = (f.value ?? args.value ?? args.newValue ?? '').toString();
+                                const disallowedRe = getDisallowedRegex(targetName);
+                                let sanitized;
+                                try {
+                                    sanitized = raw.replace(disallowedRe, '');
+                                } catch (rxErr) {
+                                    console.warn('Regex apply failed, using fallback sanitizer', rxErr, { targetName, disallowedRe, raw });
+                                    // Fallback per-type sanitizers (avoid dynamic regex construction)
+                                    if (targetName.includes('phone') || targetName.includes('mobile') || targetName.includes('contact')) sanitized = raw.replace(/[^0-9+\-()\s]/g, '');
+                                    else if (targetName.includes('date') || targetName.includes('dob') || targetName.includes('dateofbirth')) sanitized = raw.replace(/[^0-9\/\-.]/g, '');
+                                    else if (targetName.includes('amount') || targetName.includes('amt')) sanitized = raw.replace(/[^0-9\.,]/g, '');
+                                    else sanitized = raw.replace(/[^0-9]/g, '');
+                                }
+                                if (raw !== sanitized) {
+                                    try {
+                                        // If the matching field object is a signature field, skip sanitization
+                                        const fTypeRaw2 = (f && (f.type || f.fieldType || '') ) || '';
+                                        const fType2 = (fTypeRaw2 + '').toString().toLowerCase();
+                                        if (fType2.includes('signature')) {
+                                            console.debug('Skipping sanitization for signature field object', { targetName, fType2, raw });
+                                            // ensure no numeric-alert is shown for signature fields
+                                            try { alertedFieldsRef.current.delete(targetName); } catch (e) {}
+                                        } else {
+                                            f.value = sanitized;
+                                            if (typeof viewer.updateFormFieldsValue === 'function') viewer.updateFormFieldsValue(f);
+                                            if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') viewer.formDesignerModule.updateFormField(f, { value: sanitized });
+                                            // Show a one-time alert per field to inform the user
+                                            const alertKey = targetName || (args.name || args.fieldName || args.fullName || '').toString();
+                                            if (typeof window !== 'undefined' && !alertedFieldsRef.current.has(alertKey)) {
+                                                try {
+                                                    let msg = 'Please enter numbers only for this field.';
+                                                    if (targetName.includes('phone') || targetName.includes('mobile') || targetName.includes('contact')) msg = 'Please enter digits and permitted phone characters only (+ - ( ) ).';
+                                                    if (targetName.includes('date') || targetName.includes('dob') || targetName.includes('dateofbirth')) msg = 'Please enter digits and permitted date characters only (/, -, .).';
+                                                    if (targetName.includes('amount')) msg = 'Please enter digits and permitted amount characters only (.,).';
+                                                    console.warn('Sanitization applied, alerting user', { targetName, raw, sanitized, fType: fType2 });
+                                                    window.alert(msg);
+                                                } catch (e) { console.warn('alert failed', e); }
+                                                alertedFieldsRef.current.add(alertKey);
+                                            }
+                                        }
+                                    } catch (inner) { console.warn('Failed to sanitize numeric field value', inner); }
+                                } else {
+                                    try { alertedFieldsRef.current.delete(targetName); } catch (e) { }
+                                }
+                            } else if (argSanitized !== argValue) {
+                                // If we couldn't find the matching field object but args carried a value,
+                                // attempt to update via the formDesignerModule using the provided name
+                                try {
+                                    // If args reference a signature field, skip fallback sanitization
+                                    const argsFieldTypeRaw = (args.field && (args.field.type || args.field.fieldType || '')) || '';
+                                    const argsFieldType = (argsFieldTypeRaw + '').toString().toLowerCase();
+                                    const isArgsSignature = argsFieldType.includes('signature');
+                                    if (isArgsSignature) {
+                                        console.debug('Skipping fallback sanitization for signature via args.field', { targetName, argsFieldType, args });
+                                    } else {
+                                        if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') {
+                                            const disallowedRe = getDisallowedRegex(targetName);
+                                            let fallbackSanitized;
+                                            try {
+                                                fallbackSanitized = argValue.replace(disallowedRe, '');
+                                            } catch (rxErr) {
+                                                console.warn('Fallback regex apply failed, using simple fallback', rxErr, { targetName, disallowedRe, argValue });
+                                                if (targetName.includes('phone') || targetName.includes('mobile') || targetName.includes('contact')) fallbackSanitized = argValue.replace(/[^0-9+\-()\s]/g, '');
+                                                else if (targetName.includes('date') || targetName.includes('dob') || targetName.includes('dateofbirth')) fallbackSanitized = argValue.replace(/[^0-9\/\-.]/g, '');
+                                                else if (targetName.includes('amount') || targetName.includes('amt')) fallbackSanitized = argValue.replace(/[^0-9\.,]/g, '');
+                                                else fallbackSanitized = argValue.replace(/[^0-9]/g, '');
+                                            }
+                                            viewer.formDesignerModule.updateFormField({ name: args.name || args.fieldName || args.fullName }, { value: fallbackSanitized });
+                                            const alertKey = targetName || (args.name || args.fieldName || args.fullName || '').toString();
+                                            if (typeof window !== 'undefined' && !alertedFieldsRef.current.has(alertKey)) {
+                                                try {
+                                                    let msg = 'Please enter numbers only for this field.';
+                                                    if (targetName.includes('phone') || targetName.includes('mobile') || targetName.includes('contact')) msg = 'Please enter digits and permitted phone characters only (+ - ( ) ).';
+                                                    if (targetName.includes('date') || targetName.includes('dob') || targetName.includes('dateofbirth')) msg = 'Please enter digits and permitted date characters only (/, -, .).';
+                                                    if (targetName.includes('amount')) msg = 'Please enter digits and permitted amount characters only (.,).';
+                                                    console.warn('Fallback sanitization applied, alerting user', { targetName, rawArg: argValue, fallbackSanitized, argsFieldType });
+                                                    window.alert(msg);
+                                                } catch (e) { console.warn('alert failed', e); }
+                                                alertedFieldsRef.current.add(alertKey);
+                                            }
+                                        }
+                                    }
+                                } catch (inner) { console.warn('Fallback sanitize attempt failed', inner); }
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('onFormFieldPropertiesChange sanitization error', e);
+            }
             evaluateFields()
         }
         if (sanctionMode) {
@@ -1023,6 +1179,49 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         if (lastObjectUrlRef.current) { try { URL.revokeObjectURL(lastObjectUrlRef.current); } catch (e) {} lastObjectUrlRef.current = null; }
     };
 
+    // Dismiss context menu on outside click or ESC
+    useEffect(() => {
+        const onDocMouseDown = (e) => {
+            try {
+                if (!contextMenu.visible) return;
+                if (contextMenuRef.current && !contextMenuRef.current.contains(e.target)) {
+                    setContextMenu({ visible: false, x: 0, y: 0, fileId: null });
+                }
+            } catch (e) { /* ignore */ }
+        };
+        const onDocKey = (e) => {
+            if (e.key === 'Escape') setContextMenu({ visible: false, x: 0, y: 0, fileId: null });
+        };
+        document.addEventListener('mousedown', onDocMouseDown);
+        document.addEventListener('keydown', onDocKey);
+        return () => {
+            document.removeEventListener('mousedown', onDocMouseDown);
+            document.removeEventListener('keydown', onDocKey);
+        };
+    }, [contextMenu.visible]);
+
+    // Ensure context menu stays inside the viewport (adjust if near edges)
+    useEffect(() => {
+        if (!contextMenu.visible) return;
+        const adjust = () => {
+            try {
+                const el = contextMenuRef.current;
+                if (!el) return;
+                const rect = el.getBoundingClientRect();
+                let newX = contextMenu.x;
+                let newY = contextMenu.y;
+                const margin = 8;
+                if (rect.right > window.innerWidth) newX = Math.max(margin, window.innerWidth - rect.width - margin);
+                if (rect.bottom > window.innerHeight) newY = Math.max(margin, window.innerHeight - rect.height - margin);
+                if (newX !== contextMenu.x || newY !== contextMenu.y) {
+                    setContextMenu(prev => ({ ...prev, x: newX, y: newY }));
+                }
+            } catch (e) { /* ignore */ }
+        };
+        // run on next frame after menu renders
+        requestAnimationFrame(adjust);
+    }, [contextMenu.visible, contextMenu.x, contextMenu.y]);
+
 
 
     return (
@@ -1090,83 +1289,34 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                     <div onClick={() => setShowMenu(false)} style={{ position: 'relative', flex: '0 0 20%', maxWidth: '20%', height: '100%', border: '1px solid #e6e6e6', borderLeft: '1px solid #e6e6e6', backgroundColor: '#ffffff', display: 'flex', flexDirection: 'column', fontFamily: 'Roboto, "Segoe UI", sans-serif', overflow: 'hidden', transition: 'flex-basis 150ms ease', paddingTop: '0' }}>
                         <div className="attachment-header" style={{ position: 'sticky', top: 20, height: 36, display: 'flex', alignItems: 'center', padding: '0 8px', borderBottom: '1px solid #e6e6e6', backgroundColor: '#ffffff', zIndex: 2 }}>
                             <h2 style={{ margin: 0, fontWeight: 600, fontSize: '20px', flex: 1, color: '#323232', lineHeight: '36px', transform: 'translateY(-10px)' }}>Attachments</h2>
-                            <button onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }} style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, transform: 'translateY(-10px)' }} title="More options">
-                                <span className="e-icons e-more-vertical-1" style={{ fontSize: 18, color: '#6c757d', lineHeight: '36px', display: 'inline-block' }} />
+                            <button onClick={(e) => { e.stopPropagation(); setIsAttachmentOpen(false); setShowMenu(false); }} aria-label="Close attachments" style={{ background: 'transparent', border: 'none', padding: 2, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, transform: 'translateY(-10px)' }} title="Close attachments">
+                                <span className="e-icons e-close" style={{ fontSize: 14, color: '#6c757d', lineHeight: '28px', display: 'inline-block' }} />
                             </button>
-                            {showMenu && (
-                                <div onClick={(e) => e.stopPropagation()} className="attachment-menu" style={{ position: 'absolute', right: 8, top: '100%', marginTop: '4px', background: '#fff', boxShadow: '0 4px 10px rgba(0,0,0,0.15)', border: '1px solid #ddd', borderRadius: 4, minWidth: 120, zIndex: 1000 }}>
-                                    <div 
-                                        onClick={canManageAttachments ? handleOpenFile : undefined} 
-                                        className="menu-item" 
-                                        style={{ 
-                                            padding: '6px 10px', 
-                                            cursor: canManageAttachments ? 'pointer' : 'not-allowed', 
-                                            opacity: canManageAttachments ? 1 : 0.5,
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            borderBottom: '1px solid #f0f0f0'
-                                        }} 
-                                        title={!canManageAttachments ? 'Only enabled when submit is available for customer' : ''}>
-                                        <span className="e-icons e-plus" style={{ marginRight: 8 }} />
-                                        Add file
-                                    </div>
-                                    <div 
-                                        onClick={canManageAttachments ? () => handleRemoveFile() : undefined} 
-                                        className="menu-item" 
-                                        style={{ 
-                                            padding: '6px 10px', 
-                                            cursor: canManageAttachments ? 'pointer' : 'not-allowed', 
-                                            opacity: canManageAttachments ? 1 : 0.5,
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            borderBottom: '1px solid #f0f0f0'
-                                        }} 
-                                        title={!canManageAttachments ? 'Only enabled when submit is available for customer' : ''}>
-                                        <span className="e-icons e-trash" style={{ marginRight: 8 }} />
-                                        Remove All
-                                    </div>
-                                    <div 
-                                        onClick={() => { clearPendingAttachments(); setIsAttachmentOpen(false); setShowMenu(false); }} 
-                                        className="menu-item" 
-                                        style={{ 
-                                            padding: '8px 12px', 
-                                            cursor: 'pointer',
-                                            display: 'flex',
-                                            alignItems: 'center'
-                                        }}>
-                                        <span className="e-icons e-close" style={{ marginRight: 8 }} />
-                                        Close
-                                    </div>
-                                </div>
-                            )}
                         </div>
 
-                        <div className="attachment-list" style={{ padding: 12, overflowY: 'auto', flex: 1, backgroundColor: '#ffffff' }}>
-                            {uploadedFiles.length === 0 ? (
-                                <div style={{ color: '#666', marginTop: 12 }}>No files uploaded yet.<br/>Click the menu to upload files.</div>
+                        <div onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setContextMenu({ visible: true, x: e.clientX, y: e.clientY, fileId: null });
+                            setShowMenu(false);
+                        }} className="attachment-list" style={{ padding: 12, overflowY: 'auto', flex: 1, backgroundColor: '#ffffff' }}>
+                                {uploadedFiles.length === 0 ? (
+                                <div style={{ color: '#666', marginTop: 12 }}>No files uploaded yet.<br/>Right-click to add attachments.</div>
                             ) : (
                                 uploadedFiles.map((file) => (
-                                    <div key={file.id} className="attachment-item" style={{ padding: '8px 6px', borderBottom: '1px solid #eee' }}>
+                                    <div key={file.id} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, fileId: file.id }); setShowMenu(false); }} className="attachment-item" style={{ padding: '8px 6px', borderBottom: '1px solid #eee' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                                            <div style={{ flex: 1, paddingRight: 10 }}>
-                                                <div onClick={() => { setViewingFile(file); setIsAttachmentViewing(true); }} style={{ fontWeight: 'normal', marginTop: 6, marginBottom: 4, wordBreak: 'break-word', cursor: 'pointer' }} title="Open attachment">?? {file.originalName || file.name}</div>
+                                            <div style={{ flex: 1, paddingRight: 10, minWidth: 0 }}>
+                                                <div onClick={() => { setViewingFile(file); setIsAttachmentViewing(true); setContextMenu({ visible: false, x:0, y:0, fileId: null }); }} style={{ fontWeight: 'normal', marginTop: 6, marginBottom: 4, cursor: 'pointer' }} title="Open attachment">
+                                                    <span style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+                                                        <span style={{ fontSize: 14, flex: '0 0 auto' }}>📎</span>
+                                                        <span style={{ display: 'block', flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }} title={file.originalName || file.name}>{file.originalName || file.name}</span>
+                                                    </span>
+                                                </div>
                                                 <div style={{ fontSize: 12, color: '#666' }}>Size: {file.size}</div>
                                                 <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>Uploaded: {file.uploadedAt}</div>
                                             </div>
-                                            <button
-                                                onClick={canManageAttachments ? () => handleRemoveFile(file.id) : undefined}
-                                                className="icon-button"
-                                                title={canManageAttachments ? "Remove file" : "Only enabled when submit is available for customer"}
-                                                style={{
-                                                    cursor: canManageAttachments ? 'pointer' : 'not-allowed',
-                                                    opacity: canManageAttachments ? 1 : 0.5,
-                                                    border: 'none',
-                                                    background: 'transparent',
-                                                    padding: '4px',
-                                                    lineHeight: 1,
-                                                    marginTop: 8
-                                                }}
-                                            >?</button>
+                                            {/* per-item close button removed: use right-click Delete or header controls to manage attachments */}
                                         </div>
                                     </div>
                                 ))
@@ -1175,7 +1325,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                             {viewingFile && (
                                 <div onClick={closeModal} className="attachment-modal-overlay" style={{ position: 'fixed', left: 0, top: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
                                     <div onClick={(e) => e.stopPropagation()} className="attachment-modal" style={{ width: '80%', height: '80%', background: '#fff', borderRadius: 6, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                                        <button onClick={closeModal} className="icon-button" title="Close" style={{ position: 'absolute', right: 10, top: 6, zIndex: 10, fontSize: 20 }}>?</button>
+                                        <button onClick={closeModal} className="icon-button" title="Close" style={{ position: 'absolute', right: 10, top: 6, zIndex: 10, fontSize: 20 }}>✕</button>
                                         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                                             <div style={{ padding: 12, textAlign: 'center', fontWeight: 500, borderBottom: '1px solid #eee' }}>{viewingFile.originalName || viewingFile.name}</div>
                                             <div style={{ flex: 1, minHeight: 0 }}>
@@ -1198,6 +1348,24 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                         </div>
 
                         <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} accept="application/pdf" />
+                        {contextMenu.visible && (
+                            <div ref={contextMenuRef} onMouseDown={(e)=>e.stopPropagation()} style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 2000, background: '#fff', boxShadow: '0 6px 18px rgba(0,0,0,0.12)', borderRadius: 6, minWidth: 160, padding: '6px 0' }}>
+                                <div
+                                    title={canManageAttachments ? 'Add attachment' : 'Adding attachments is disabled'}
+                                    style={{ padding: '8px 14px', cursor: canManageAttachments ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', opacity: canManageAttachments ? 1 : 0.5 }}
+                                    onClick={(ev)=>{ ev.stopPropagation(); setContextMenu({ visible: false, x:0,y:0,fileId:null }); if (canManageAttachments) handleOpenFile(); }}>
+                                    <span style={{ marginRight: 8 }} className="e-icons e-plus" /> Add Attachment
+                                </div>
+                                {contextMenu.fileId != null && (
+                                    <div
+                                        title={canManageAttachments ? 'Delete attachment' : 'Deleting attachments is disabled'}
+                                        style={{ padding: '8px 14px', cursor: canManageAttachments ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', opacity: canManageAttachments ? 1 : 0.5 }}
+                                        onClick={(ev)=>{ ev.stopPropagation(); const id = contextMenu.fileId; setContextMenu({ visible: false, x:0,y:0,fileId:null }); if (canManageAttachments && typeof handleRemoveFile === 'function') handleRemoveFile(id); }}>
+                                        <span style={{ marginRight: 8 }} className="e-icons e-trash" /> Delete
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
