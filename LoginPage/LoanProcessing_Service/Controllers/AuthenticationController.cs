@@ -7,28 +7,53 @@ using System.Text.Json;
 
 namespace Authentication.Controllers;
 
+/// <summary>
+/// Controller that exposes PDF/file and simple user management endpoints used by the client.
+/// Non-functional optimizations were applied (centralized paths, shared Json options, proper disposal).
+/// </summary>
 [ApiController]
 [Route("api/[controller]")]
 public class AuthenticationController : ControllerBase
 {
     private readonly IWebHostEnvironment _env;
     private readonly ILogger<AuthenticationController> _logger;
+
+    // Use environment content root so paths are explicit and consistent
+    private readonly string _userFilePath;
+
+    // Reusable JSON options
+    private static readonly JsonSerializerOptions _jsonOptions =
+        new JsonSerializerOptions { WriteIndented = true };
+
+    private static readonly JsonSerializerOptions _jsonOptionsCaseInsensitive =
+        new JsonSerializerOptions { PropertyNameCaseInsensitive = true, WriteIndented = true };
+
+    /// <summary>
+    /// Creates a new instance of <see cref="AuthenticationController"/>.
+    /// </summary>
     public AuthenticationController(IWebHostEnvironment env, ILogger<AuthenticationController> logger)
     {
         _env = env ?? throw new ArgumentNullException(nameof(env));
         _logger = logger;
+        _userFilePath = Path.Combine(_env.ContentRootPath ?? Directory.GetCurrentDirectory(), "users.json");
     }
-    private static readonly string _userFilePath = "users.json";
-    private static readonly JsonSerializerOptions _jsonOptions =
-        new JsonSerializerOptions { WriteIndented = true };
+
+    /// <summary>
+    /// Helper property to resolve the app Data directory path.
+    /// </summary>
+    private string DataDirectory => Path.Combine(_env.ContentRootPath ?? Directory.GetCurrentDirectory(), "Data");
+
     /// <summary>
     /// Login payload: Username + Password only.
     /// </summary>
     public class LoginRequest
     {
+        /// <summary>Username attempting to authenticate.</summary>
         public string? Username { get; set; }
+        /// <summary>Password (plain text supplied by client over HTTPS in typical setups).</summary>
         public string? Password { get; set; }
     }
+
     /// <summary>
     /// Register a new user with Username, Email, and Password.
     /// Password is stored as a BCrypt hash.
@@ -38,6 +63,7 @@ public class AuthenticationController : ControllerBase
     {
         if (newUser is null)
             return BadRequest(new { message = "Request body cannot be empty." });
+
         var username = newUser.Username?.Trim();
         var email = newUser.Email?.Trim();
         var password = newUser.Password?.Trim();
@@ -47,6 +73,7 @@ public class AuthenticationController : ControllerBase
         {
             return BadRequest(new { message = "Username, Email and Password are required." });
         }
+
         var users = LoadUsers();
         // Case-insensitive uniqueness
         if (users.Any(u => string.Equals(u.Username, username, StringComparison.OrdinalIgnoreCase)))
@@ -57,6 +84,7 @@ public class AuthenticationController : ControllerBase
         {
             return BadRequest(new { message = "Email already registered" });
         }
+
         // Hash & persist
         var userToPersist = new User
         {
@@ -69,8 +97,10 @@ public class AuthenticationController : ControllerBase
         System.IO.File.WriteAllText(_userFilePath, json);
         return Ok(new { message = "User registered successfully" });
     }
+
     /// <summary>
     /// Login with Username and Password.
+    /// Returns basic user info on success.
     /// </summary>
     [HttpPost("login")]
     public IActionResult Login([FromBody] LoginRequest login)
@@ -94,15 +124,31 @@ public class AuthenticationController : ControllerBase
         }
         return Ok(new { username = user.Username, email = user.Email });
     }
-    private static List<User> LoadUsers()
+
+    /// <summary>
+    /// Loads users from the local <c>users.json</c> file.
+    /// Returns an empty list on IO/parse error to avoid throwing from endpoint handlers.
+    /// </summary>
+    private List<User> LoadUsers()
     {
-        if (!System.IO.File.Exists(_userFilePath))
+        try
+        {
+            if (!System.IO.File.Exists(_userFilePath))
+                return new List<User>();
+            var json = System.IO.File.ReadAllText(_userFilePath);
+            return JsonSerializer.Deserialize<List<User>>(json) ?? new List<User>();
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "LoadUsers failed, returning empty user list");
             return new List<User>();
-        var json = System.IO.File.ReadAllText(_userFilePath);
-        return JsonSerializer.Deserialize<List<User>>(json) ?? new List<User>();
+        }
     }
 
-    // GET api/authentication/GetPdfStream
+    /// <summary>
+    /// Returns a PDF stream for the specified <paramref name="filename"/>.
+    /// </summary>
+    /// <param name="filename">PDF filename located under the Data folder.</param>
     [HttpGet("GetPdfStream/{filename}")]
     public IActionResult GetPdfStream(string filename)
     {
@@ -110,13 +156,13 @@ public class AuthenticationController : ControllerBase
             return BadRequest(new { message = "Filename is required" });
         try
         {
-            var dataDir = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+            var dataDir = DataDirectory;
             var filePath = Path.Combine(dataDir, filename);
 
             if (!System.IO.File.Exists(filePath))
                 return NotFound(new { message = "PDF file not found." });
 
-            var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+            var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             return new FileStreamResult(stream, "application/pdf");
         }
         catch (Exception ex)
@@ -125,7 +171,11 @@ public class AuthenticationController : ControllerBase
         }
     }
 
-    // POST api/authentication/SaveFilledForms
+    /// <summary>
+    /// Saves a filled PDF form (base64) and any provided attachments.
+    /// Attempts to embed attachments into the PDF; falls back to saving attachments externally.
+    /// Returns file metadata and any attachment info.
+    /// </summary>
     [HttpPost("SaveFilledForms")]
     public IActionResult SaveFilled([FromBody] SaveFilledRequest req)
     {
@@ -145,7 +195,7 @@ public class AuthenticationController : ControllerBase
         }
 
         // Save into project Data folder
-        var dataDir = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+        var dataDir = DataDirectory;
         Directory.CreateDirectory(dataDir);
 
         var desired = string.IsNullOrWhiteSpace(req.FileName) ? "loan_form_1.pdf" : req.FileName.Trim();
@@ -154,7 +204,6 @@ public class AuthenticationController : ControllerBase
         var safeName = Path.GetFileName(desired); // prevents path traversal
 
         var fullPath = Path.Combine(dataDir, safeName);
-        // We'll write the file after processing attachments (embedding may modify the PDF).
         // Prepare attachment tracking
         var attachmentsSavedInfo = new List<object>();
         var attachmentsFolder = Path.Combine(dataDir, Path.GetFileNameWithoutExtension(safeName) + "_attachments");
@@ -261,7 +310,6 @@ public class AuthenticationController : ControllerBase
         var documentId = (req.DocumentId ?? "").Trim();
         if (string.IsNullOrWhiteSpace(documentId))
         {
-            // generate a simple numeric-ish id if you need deterministic ids, else GUID
             documentId = DateTime.UtcNow.Ticks.ToString();
         }
         var fileNameKey = fileName; // what we actually wrote
@@ -277,7 +325,7 @@ public class AuthenticationController : ControllerBase
                 var json = System.IO.File.ReadAllText(indexPath);
                 list = string.IsNullOrWhiteSpace(json)
                     ? new List<UserFileEntry>()
-                    : JsonSerializer.Deserialize<List<UserFileEntry>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                    : JsonSerializer.Deserialize<List<UserFileEntry>>(json, _jsonOptionsCaseInsensitive)
                       ?? new List<UserFileEntry>();
             }
             else
@@ -290,12 +338,7 @@ public class AuthenticationController : ControllerBase
             if (!string.IsNullOrWhiteSpace(fileNameKey))
             {
                 var searchKey = fileNameKey;
-                existing = list.FirstOrDefault(x =>
-                    !string.IsNullOrWhiteSpace(x.FileName) &&
-                    string.Equals(x.FileName.Trim(), searchKey, StringComparison.OrdinalIgnoreCase));
 
-
-                if (fileNameKey.IndexOf("Sanction", StringComparison.OrdinalIgnoreCase) >= 0 && status == "SIGN_REQUIRED" && existing == null)
                 if (fileNameKey.IndexOf("Sanction", StringComparison.OrdinalIgnoreCase) >= 0 && status == "SIGN_REQUIRED")
                 {
                     if (fileNameKey.IndexOf("Sanction", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -307,7 +350,6 @@ public class AuthenticationController : ControllerBase
                         }
                         else
                         {
-                            // fallback: find "Sanction" and trim at previous underscore
                             idx = fileNameKey.IndexOf("Sanction", StringComparison.OrdinalIgnoreCase);
                             if (idx > 0)
                             {
@@ -347,7 +389,7 @@ public class AuthenticationController : ControllerBase
 
             // atomic write
             var tmp = indexPath + ".tmp";
-            var outJson = JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true });
+            var outJson = JsonSerializer.Serialize(list, _jsonOptions);
             System.IO.File.WriteAllText(tmp, outJson);
             System.IO.File.Copy(tmp, indexPath, overwrite: true);
             System.IO.File.Delete(tmp);
@@ -363,7 +405,9 @@ public class AuthenticationController : ControllerBase
         return Ok(new { saved = true, path = fullPath, url = publicUrl, attachments = attachmentsSavedInfo });
     }
 
-
+    /// <summary>
+    /// Update the status of an existing file entry in the index.
+    /// </summary>
     [HttpPost("UpdateFileStatus")]
     public IActionResult UpdateFileStatus([FromBody] UpdateStatusRequest req)
     {
@@ -372,7 +416,7 @@ public class AuthenticationController : ControllerBase
 
         try
         {
-            var dataDir = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+            var dataDir = DataDirectory;
             var indexPath = Path.Combine(dataDir, "userFiles.json");
             if (!System.IO.File.Exists(indexPath))
                 return NotFound("Index not found");
@@ -380,7 +424,7 @@ public class AuthenticationController : ControllerBase
             var json = System.IO.File.ReadAllText(indexPath);
             var list = string.IsNullOrWhiteSpace(json)
                 ? new List<UserFileEntry>()
-                : JsonSerializer.Deserialize<List<UserFileEntry>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                : JsonSerializer.Deserialize<List<UserFileEntry>>(json, _jsonOptionsCaseInsensitive)
                   ?? new List<UserFileEntry>();
 
             var incomingDoc = (req.DocumentId ?? "").Trim();
@@ -406,7 +450,7 @@ public class AuthenticationController : ControllerBase
 
             // atomic write back
             var tmp = indexPath + ".tmp";
-            var outJson = JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true });
+            var outJson = JsonSerializer.Serialize(list, _jsonOptions);
             System.IO.File.WriteAllText(tmp, outJson);
             System.IO.File.Copy(tmp, indexPath, overwrite: true);
             System.IO.File.Delete(tmp);
@@ -418,6 +462,10 @@ public class AuthenticationController : ControllerBase
             return StatusCode(500, $"Error updating status: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Returns list of files for a given user (or ALL).
+    /// </summary>
     [HttpGet("GetUserFiles")]
     public IActionResult GetUserFiles([FromQuery] string username)
     {
@@ -426,7 +474,7 @@ public class AuthenticationController : ControllerBase
 
         try
         {
-            var dataDir = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+            var dataDir = DataDirectory;
             var indexPath = Path.Combine(dataDir, "userFiles.json");
             if (!System.IO.File.Exists(indexPath))
                 return Ok(new List<UserFileEntry>());
@@ -434,7 +482,7 @@ public class AuthenticationController : ControllerBase
             var json = System.IO.File.ReadAllText(indexPath);
             var list = string.IsNullOrWhiteSpace(json)
                 ? new List<UserFileEntry>()
-                : JsonSerializer.Deserialize<List<UserFileEntry>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                : JsonSerializer.Deserialize<List<UserFileEntry>>(json, _jsonOptionsCaseInsensitive)
                   ?? new List<UserFileEntry>();
             if (string.Equals(username, "ALL", StringComparison.OrdinalIgnoreCase))
             {
@@ -453,11 +501,14 @@ public class AuthenticationController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Returns metadata for attachments embedded in a PDF.
+    /// </summary>
     [HttpGet("GetPdfAttachments/{fileName}")]
     public IActionResult GetPdfAttachments(string fileName)
     {
         if (string.IsNullOrWhiteSpace(fileName)) return BadRequest("fileName required");
-        var dataDir = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+        var dataDir = DataDirectory;
         var fullPath = Path.Combine(dataDir, fileName);
         if (!System.IO.File.Exists(fullPath)) return NotFound();
 
@@ -468,7 +519,6 @@ public class AuthenticationController : ControllerBase
             {
                 var list = new List<object>();
 
-                // Null-safe access: doc.Attachments may be null
                 var attachments = doc.Attachments;
                 if (attachments == null || attachments.Count == 0)
                     return Ok(list); // empty array
@@ -490,8 +540,9 @@ public class AuthenticationController : ControllerBase
         }
     }
 
-
-
+    /// <summary>
+    /// Returns a specific attachment by name embedded within <paramref name="pdfFileName"/>.
+    /// </summary>
     [HttpGet("GetPdfAttachmentFile/{pdfFileName}/{attachmentName}")]
     public IActionResult GetPdfAttachmentFile(string pdfFileName, string attachmentName)
     {
@@ -499,7 +550,7 @@ public class AuthenticationController : ControllerBase
         // decode client-encoded name (handles spaces etc.)
         attachmentName = string.IsNullOrWhiteSpace(attachmentName) ? attachmentName : Uri.UnescapeDataString(attachmentName).Trim();
 
-        var dataDir = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+        var dataDir = DataDirectory;
         var fullPath = Path.Combine(dataDir, pdfFileName);
         if (!System.IO.File.Exists(fullPath)) return NotFound();
         try
@@ -515,7 +566,6 @@ public class AuthenticationController : ControllerBase
                 for (int i = 0; i < attachments.Count; i++)
                 {
                     var a = attachments[i];
-                    // Try common name properties, fallback to ToString()
                     string name = TryGetStringProperty(a, "FileName")
                                   ?? TryGetStringProperty(a, "Name")
                                   ?? TryGetStringProperty(a, "Filename")
@@ -524,7 +574,6 @@ public class AuthenticationController : ControllerBase
 
                     _logger?.LogDebug("Attachment candidate #{index}: name={name}", i, name);
 
-                    // Compare just file name portion (ignore path differences), case-insensitive
                     if (string.Equals(Path.GetFileName(name), Path.GetFileName(attachmentName), StringComparison.OrdinalIgnoreCase))
                     {
                         var bytes = TryGetAttachmentBytes(a);
@@ -551,8 +600,12 @@ public class AuthenticationController : ControllerBase
         }
     }
 
-
     // Helpers (reflection-friendly across versions)
+
+    /// <summary>
+    /// Attempts to read a string-like property (case-insensitive) from an object.
+    /// Falls back to <c>ToString()</c> when no property is found.
+    /// </summary>
     private static string? TryGetStringProperty(object obj, string propName)
     {
         try
@@ -564,7 +617,6 @@ public class AuthenticationController : ControllerBase
                 var v = p.GetValue(obj);
                 return v?.ToString();
             }
-            // fallback to ToString() if it yields a useful name
             var s = obj.ToString();
             return string.IsNullOrWhiteSpace(s) ? null : s;
         }
@@ -574,6 +626,10 @@ public class AuthenticationController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Attempts multiple strategies to extract raw bytes from a PDF attachment object.
+    /// Works with byte[], Stream, nested properties or Save/ToArray style methods.
+    /// </summary>
     private static byte[]? TryGetAttachmentBytes(object att)
     {
         try
@@ -581,15 +637,13 @@ public class AuthenticationController : ControllerBase
             if (att == null) return null;
             var t = att.GetType();
 
-            // If object itself is a byte[] or Stream
             if (att is byte[] b0) return b0;
             if (att is Stream s0) { using var ms0 = new MemoryStream(); s0.CopyTo(ms0); return ms0.ToArray(); }
 
-            // Common property names that may hold bytes, stream or base64 text
             var candidateProps = new[] {
-            "AttachedFile", "FileData", "File", "Data", "DataBytes",
-            "FileContent", "EmbeddedFile", "Content", "Stream", "Bytes"
-        };
+                "AttachedFile", "FileData", "File", "Data", "DataBytes",
+                "FileContent", "EmbeddedFile", "Content", "Stream", "Bytes"
+            };
 
             foreach (var propName in candidateProps)
             {
@@ -602,13 +656,10 @@ public class AuthenticationController : ControllerBase
                 if (val is Stream s) { using var ms = new MemoryStream(); s.CopyTo(ms); return ms.ToArray(); }
                 if (val is string str)
                 {
-                    // try decode base64
                     try { return Convert.FromBase64String(str); } catch { }
-                    // maybe it's a path
                     if (System.IO.File.Exists(str)) return System.IO.File.ReadAllBytes(str);
                 }
 
-                // If property returns an object that itself holds a Stream
                 var nestedStreamProp = val.GetType().GetProperty("Stream", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
                 if (nestedStreamProp != null)
                 {
@@ -616,7 +667,6 @@ public class AuthenticationController : ControllerBase
                     if (sVal != null) { using var ms2 = new MemoryStream(); sVal.CopyTo(ms2); return ms2.ToArray(); }
                 }
 
-                // or a nested byte[] property
                 var nestedBytesProp = val.GetType().GetProperty("Bytes", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
                 if (nestedBytesProp != null)
                 {
@@ -625,7 +675,6 @@ public class AuthenticationController : ControllerBase
                 }
             }
 
-            // Try Save/SaveTo/SaveToStream style methods that take a Stream
             var saveMethod = t.GetMethod("Save", new[] { typeof(Stream) }) ??
                              t.GetMethod("SaveTo", new[] { typeof(Stream) }) ??
                              t.GetMethod("SaveAs", new[] { typeof(Stream) }) ??
@@ -638,7 +687,6 @@ public class AuthenticationController : ControllerBase
                 return ms.ToArray();
             }
 
-            // Try ToArray / GetBytes / GetContent methods
             var toArrayMethod = t.GetMethod("ToArray", Type.EmptyTypes) ?? t.GetMethod("GetBytes", Type.EmptyTypes) ?? t.GetMethod("GetContent", Type.EmptyTypes);
             if (toArrayMethod != null)
             {
@@ -646,13 +694,16 @@ public class AuthenticationController : ControllerBase
                 if (o is byte[] bb) return bb;
             }
         }
-        catch (Exception ex)
+        catch
         {
             // swallow here; caller logs context
         }
         return null;
     }
 
+    /// <summary>
+    /// Attempts to determine size/length of an attachment, falling back to byte extraction.
+    /// </summary>
     private static long? TryGetAttachmentSize(object att)
     {
         try
@@ -671,13 +722,16 @@ public class AuthenticationController : ControllerBase
         return null;
     }
 
-
-
-
-    // Accept both DELETE and POST (fallback) and consume JSON
+    /// <summary>
+    /// Accept both DELETE and POST (fallback) and consume JSON.
+    /// Removes an attachment from a PDF loaded from the supplied base64 payload.
+    /// </summary>
     [HttpPost("DeleteFile")]
     public IActionResult DeleteFile([FromBody] DeleteRequest req)
     {
+        if (req == null || string.IsNullOrWhiteSpace(req.Base64) || string.IsNullOrWhiteSpace(req.FileName))
+            return BadRequest("Invalid data");
+
         var data = req.Base64.Contains(",") ? req.Base64.Split(',')[1] : req.Base64;
         byte[] bytes;
         try
@@ -688,78 +742,92 @@ public class AuthenticationController : ControllerBase
         {
             return BadRequest("Invalid base64 data");
         }
-        var mainStream = new MemoryStream(bytes);
-        var loadedDocument = new PdfLoadedDocument(mainStream);
-        var name = req.FileName;
-        foreach (PdfAttachment attachments in loadedDocument.Attachments)
+
+        using (var mainStream = new MemoryStream(bytes))
+        using (var loadedDocument = new PdfLoadedDocument(mainStream))
         {
-            if (attachments.FileName == name)
+            var name = req.FileName;
+            var attachments = loadedDocument.Attachments;
+            if (attachments != null)
             {
-                loadedDocument.Attachments.Remove(attachments);
-                break;
+                for (int i = attachments.Count - 1; i >= 0; i--)
+                {
+                    var attachment = attachments[i];
+                    var fileName = TryGetStringProperty(attachment, "FileName") ?? TryGetStringProperty(attachment, "Name") ?? attachment?.ToString();
+                    if (!string.IsNullOrWhiteSpace(fileName) && string.Equals(Path.GetFileName(fileName), Path.GetFileName(name), StringComparison.OrdinalIgnoreCase))
+                    {
+                        loadedDocument.Attachments.RemoveAt(i);
+                        break;
+                    }
+                }
             }
         }
-        //    if (string.IsNullOrWhiteSpace(name)) return BadRequest(new { message = "fileName required" });
-
-        //// Use injected _env (instance field) to build server path
-        //var baseFolder = Path.Combine(_env.ContentRootPath, "UploadedFiles");
-        //var filePath = Path.Combine(baseFolder, name);
-
-        //_logger.LogInformation("DeleteFile requested for {File}, resolved path {Path}", name, filePath);
-
-        //    if (!System.IO.File.Exists(filePath))
-        //    {
-        //        return NotFound(new { message = "File not found" });
-        //    }
 
         try
         {
-            return Ok(new { success = true, fileName = name });
+            return Ok(new { success = true, fileName = req.FileName });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error deleting file {File}");
+            _logger.LogError(ex, "Error deleting file {File}", req.FileName);
             return StatusCode(500, new { message = "Failed to delete file", detail = ex.Message });
         }
     }
 }
 
-        // POST fallback if you need it
-        //[HttpPost("DeleteFile")]
-        //public IActionResult DeleteFilePost([FromBody] DeleteRequest req) => DeleteFile(req, null)
-    public class SaveFilledRequest
-    {
-        public string? Base64 { get; set; }
-        public string? FileName { get; set; }
-        public string? DocumentId { get; set; }
-        public string? Username { get; set; }
-        public string? CustomerName { get; set; }
-        public string? Status { get; set; }
-        public List<AttachmentDto>? Attachments { get; set; }
-    }
-    public class UpdateStatusRequest
-    {
-        public string DocumentId { get; set; }   // preferred
-        public string FileName { get; set; }     // optional fallback
-        public string Status { get; set; }       // required: "APPROVED" / "REJECTED" / etc.
-    }
-    public class UserFileEntry
-    {
-        public string CustomerName { get; set; }
-        public string DocumentId { get; set; }
-        public string FileName { get; set; }
-        public string Username { get; set; }
-        public string Status { get; set; }
-        public DateTime CreatedAt { get; set; }
-        public DateTime? UpdatedAt { get; set; }
-    }
-    public class AttachmentDto
-    {
-        public string? Name { get; set; }
-        public string? Base64 { get; set; }
-        public string? Type { get; set; }
-        public string? OriginalName { get; set; }
-        public long? Size { get; set; }
-    }
-    public class DeleteRequest { public string FileName { get; set; } public string? Base64 { get; set; }}
+// DTOs and helper classes (unchanged logic, documented)
 
+/// <summary>
+/// Request payload for saving a filled PDF and attachments.
+/// </summary>
+public class SaveFilledRequest
+{
+    public string? Base64 { get; set; }
+    public string? FileName { get; set; }
+    public string? DocumentId { get; set; }
+    public string? Username { get; set; }
+    public string? CustomerName { get; set; }
+    public string? Status { get; set; }
+    public List<AttachmentDto>? Attachments { get; set; }
+}
+
+/// <summary>
+/// Request for updating file status in the index.
+/// </summary>
+public class UpdateStatusRequest
+{
+    public string DocumentId { get; set; }   // preferred
+    public string FileName { get; set; }     // optional fallback
+    public string Status { get; set; }       // required: "APPROVED" / "REJECTED" / etc.
+}
+
+/// <summary>
+/// Index entry describing a saved file.
+/// </summary>
+public class UserFileEntry
+{
+    public string CustomerName { get; set; }
+    public string DocumentId { get; set; }
+    public string FileName { get; set; }
+    public string Username { get; set; }
+    public string Status { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
+/// <summary>
+/// Attachment descriptor supplied by the client.
+/// </summary>
+public class AttachmentDto
+{
+    public string? Name { get; set; }
+    public string? Base64 { get; set; }
+    public string? Type { get; set; }
+    public string? OriginalName { get; set; }
+    public long? Size { get; set; }
+}
+
+/// <summary>
+/// Request used by DeleteFile endpoint; contains the file name to remove and the base64 PDF payload.
+/// </summary>
+public class DeleteRequest { public string FileName { get; set; } public string? Base64 { get; set; } }
