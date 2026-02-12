@@ -7,7 +7,6 @@ import { LoanStatus } from './constants/loanStatus.js'
 const DashBoard = () => {
   const [loggedInUser, setUser] = useState(null);
   const [rows, setRows] = useState([]);
-  //const [nextId, setNextId] = useState(1001);
   const [nextId, setNextId] = useState(() => {
     try {
       const v = sessionStorage.getItem('nextId');
@@ -24,7 +23,7 @@ const DashBoard = () => {
   const [selectedLoanId, setSelectedLoanId] = useState(null);
   const [attachmentsVersion, setAttachmentsVersion] = useState(0);
   const [attachmentCounts, setAttachmentCounts] = useState({});
-  
+
   //File Path of respective file
   const file = `wwwroot/pdfs/${pdfFileName}.pdf`
   const openViewerForNew = () => {
@@ -218,7 +217,6 @@ const DashBoard = () => {
   }, [attachmentsVersion, rows]);
   useEffect(() => {
     if (!didMount.current) { didMount.current = true; return; }
-    console.log('status effect ->', { loanStatus, pdfFileName });
 
     (async () => {
       try {
@@ -229,7 +227,6 @@ const DashBoard = () => {
         const documentId = (pdfFileName && (pdfFileName.match(/(\d+)(?=\.pdf$|$)/) || [])[0]) || null;
 
         const payload = { DocumentId: documentId, FileName: pdfFileName, Status: loanStatus };
-        console.log('calling UpdateFileStatus', payload);
 
         const resp = await fetch(`${base}/api/Authentication/UpdateFileStatus`, {
           method: 'POST',
@@ -238,7 +235,6 @@ const DashBoard = () => {
         });
 
         const text = await resp.text().catch(() => '<no body>');
-        console.log('UpdateFileStatus response', resp.status, text);
         if (!resp.ok) return;
 
         window.dispatchEvent(new CustomEvent('userFilesChanged', { detail: { documentId, fileName: pdfFileName, username } }));
@@ -275,7 +271,7 @@ const DashBoard = () => {
       </div>
     )
   }
- 
+
   return (
     <div className="dashboard-page">
       {/* Header bar (blue) */}

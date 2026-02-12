@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import './PdfViewer.css'
 import {
     PdfViewerComponent,
@@ -43,16 +43,10 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
     const contextMenuRef = useRef(null);
     // allow submit only when fields are complete and status is not already SUBMITTED
     const canSubmit = showBtn;
-    ///PDF Viewer Modules
-    // Enable attachment operations: 
-    // - Loan Officer: can manage when reviewing (SUBMITTED, UNDER_REVIEW states)
-    // - Customer: can manage when document has NO status (initial creation) OR when INFO_REQUIRED (additional info requested)
-    // - Manager: cannot manage (view only)
-    const canManageAttachments = role !== 'Manager' && (
-        (role === 'Loan Officer' && (loanStatus === LoanStatus.SUBMITTED || loanStatus === LoanStatus.UNDER_REVIEW)) ||
-        (role !== 'Loan Officer' && role !== 'Manager' && (!loanStatus || loanStatus === LoanStatus.INFO_REQUIRED) && canSubmit)
-    )
-    const services = [
+
+    // Memoize static arrays/objects to avoid recreating them each render
+    const API_BASE = useMemo(() => process.env.REACT_APP_API_URL || 'http://localhost:5063', []);
+    const services = useMemo(() => [
         Toolbar,
         Magnification,
         Navigation,
@@ -65,9 +59,9 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         ThumbnailView,
         Annotation,
         Print
-    ]
-    // Build toolbar groups using Syncfusion's toolbar group keys
-    const allGroups = [
+    ], []);
+
+    const allGroups = useMemo(() => [
         'OpenOption',
         'PageNavigationTool',
         'MagnificationTool',
@@ -81,49 +75,64 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         'SubmitForm',
         'AnnotationEditTool',
         'FormDesignerEditTool',
-    ]
-    // Remove these groups for everyone
-    const removeAlways = [ 'OpenOption','UndoRedoTool', 'DownloadOption']
-    // Remove these for Customer
-    const removeForCustomer = ['AnnotationEditTool', 'PrintOption', 'FormDesignerEditTool', 'SubmitForm']
-    // Build toolbar groups using a simple loop for clarity
-    const toolbarGroups = []
-    for (let i = 0; i < allGroups.length; i++) {
-        const g = allGroups[i]
-        // skip globally removed groups
-        if (removeAlways.includes(g)) continue
-        // skip groups not allowed for customers
-        if ((role !== 'Manager' && role !== 'Loan Officer') && removeForCustomer.includes(g)) continue
-        toolbarGroups.push(g)
-        if (pdfFileName.toLowerCase().includes("sanction") && loanStatus === LoanStatus.APPROVED) {
-            toolbarGroups.push('DownloadOption');
-        }
-    }
+    ], []);
 
-    // Insert attachment button after SearchOption so it appears after the search icon
-    const attachmentButton = {
+    const removeAlways = useMemo(() => ['OpenOption', 'UndoRedoTool', 'DownloadOption'], []);
+    const removeForCustomer = useMemo(() => ['AnnotationEditTool', 'PrintOption', 'FormDesignerEditTool', 'SubmitForm'], []);
+
+    // Compute toolbar groups once per relevant inputs
+    const toolbarGroups = useMemo(() => {
+        const groups = [];
+        for (let i = 0; i < allGroups.length; i++) {
+            const g = allGroups[i];
+            if (removeAlways.includes(g)) continue;
+            if ((role !== 'Manager' && role !== 'Loan Officer') && removeForCustomer.includes(g)) continue;
+            groups.push(g);
+            if (pdfFileName && pdfFileName.toLowerCase().includes('sanction') && loanStatus === LoanStatus.APPROVED) {
+                groups.push('DownloadOption');
+            }
+        }
+        return groups;
+    }, [allGroups, removeAlways, removeForCustomer, role, pdfFileName, loanStatus]);
+
+    const attachmentButton = useMemo(() => ({
         prefixIcon: 'add-attachment-icon',
         id: 'attachment_button',
         tooltipText: 'Add Attachments',
         align: 'Right',
         type: 'Button'
-    }
-    const searchIndex = toolbarGroups.findIndex(g => g === 'SearchOption')
-    if (searchIndex >= 0) {
-        // place right after SearchOption
-        toolbarGroups.splice(searchIndex + 1, 0, attachmentButton)
-    } else {
-        // fallback: append
-        toolbarGroups.push(attachmentButton)
+    }), []);
+
+    // Insert attachment button after SearchOption so it appears after the search icon
+    const searchIndex = toolbarGroups.findIndex(g => g === 'SearchOption');
+    if (searchIndex >= 0 && toolbarGroups[searchIndex + 1] !== attachmentButton) {
+        toolbarGroups.splice(searchIndex + 1, 0, attachmentButton);
+    } else if (searchIndex < 0 && !toolbarGroups.includes(attachmentButton)) {
+        toolbarGroups.push(attachmentButton);
     }
 
-    // Simple: fetch PDF blob from server, create blob URL and ask viewer to load it
+    // Enable attachment operations: memoized for performance
+    const canManageAttachments = useMemo(() => {
+        // Allow attachment management for everyone when the bottom action bar is visible.
+        if (actionBar) return true;
+        // Fallback to original role/status-based rules when the action bar is not shown.
+        return role !== 'Manager' && (
+            (role === 'Loan Officer' && (loanStatus === LoanStatus.SUBMITTED || loanStatus === LoanStatus.UNDER_REVIEW)) ||
+            (role !== 'Loan Officer' && role !== 'Manager' && (!loanStatus || loanStatus === LoanStatus.INFO_REQUIRED) && canSubmit)
+        );
+    }, [role, loanStatus, canSubmit, actionBar]);
+
+    /**
+     * resourcesLoaded
+     * Fetch the PDF stream from the server, create a blob URL and load it into the PDF viewer.
+     * Also attempts to fetch server-side attachments metadata for the loaded file.
+     */
     const resourcesLoaded = async () => {
         const viewer = viewerRef.current
         if (!viewer) return
 
         try {
-            const base = process.env.REACT_APP_API_URL || 'http://localhost:5063'
+            const base = API_BASE
             const name = (loanStatus === LoanStatus.APPROVED && !pdfFileName.toLowerCase().includes("sanction")) ? "Sanction_Letter" : pdfFileName || 'Loan_Application_Form'
             const filename = name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`
             const resp = await fetch(`${base}/api/Authentication/GetPdfStream/${encodeURIComponent(filename)}`)
@@ -147,7 +156,11 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             console.error('Error loading PDF:', err)
         }
     }
-    //Get Document ID
+    /**
+     * getDocumentId
+     * Derive a numeric document id from the `pdfFileName` when possible, otherwise use the provided `fileId`.
+     * This supports filenames like `Customer_1001` or `Loan_Application_Form`.
+     */
     function getDocumentId(pdfFileName, fileId) {
         const base = pdfFileName.trim();
         if (base.toLowerCase() === 'loan_application_form') {
@@ -161,14 +174,22 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
         return String(fileId);
     }
-    // Convert a Blob to base64 data URL
+    /**
+     * blobToBase64
+     * Convert a Blob into a base64 data URL string using FileReader.
+     * Resolves with the full data URL (including `data:` prefix).
+     */
     const blobToBase64 = (blob) => new Promise((resolve, reject) => {
         const reader = new FileReader()
         reader.onloadend = () => resolve(reader.result)
         reader.onerror = reject
         reader.readAsDataURL(blob)
     })
-    //Save the complete Lon application in the server
+    /**
+     * handleSubmit
+     * Save the currently filled PDF form and any pending attachments to the server.
+     * Updates parent state with the saved filename and attachment counts, and dispatches events.
+     */
     const handleSubmit = async () => {
         if (role !== "Manager" && role !== "Loan Officer") {
             if (loanStatus === LoanStatus.SIGN_REQUIRED) {
@@ -185,7 +206,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             const blob = await viewer.saveAsBlob();
             const base64 = await blobToBase64(blob);
             // Use the same API base as resourcesLoaded
-            const base = process.env.REACT_APP_API_URL || 'http://localhost:5063';
+            const base = API_BASE;
             // Use the current `count` as the file id so client and server agree
             const fileId = count;
             let fileName;
@@ -227,7 +248,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             let savedAttachmentsCount = 0;
             try {
                 if (json && Array.isArray(json.attachments) && json.attachments.length > 0) {
-                    const base = process.env.REACT_APP_API_URL || 'http://localhost:5063';
+                    const base = API_BASE;
                     const savedFiles = json.attachments.map((a, idx) => {
                         const fname = a.fileName || a.name || a.originalName || `attachment_${idx}`;
                         const url = a.url || `${base}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(savedName)}/${encodeURIComponent(fname)}`;
@@ -294,14 +315,20 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
     };
 
-    //Handle Reject Logic
+    /**
+     * handleReject
+     * Mark the current loan as REJECTED and submit the document change.
+     */
     const handleReject = () => {
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.REJECTED;
         setLoanStatus(LoanStatus.REJECTED)
         setViewerMode(false)
         handleSubmit();
     }
-    // //Handle Approval Logic
+    /**
+     * handleApproval
+     * Mark the loan APPROVED, collect sanction-related form fields and prepare the sanction values.
+     */
     const handleApproval = async () => {
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED;
         if (!showBtn) return
@@ -323,21 +350,30 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
         setSanctionValues(values)
     }
-    // When loanStatus becomes APPROVED and we have sanctionValues, load the sanction template
+    /**
+     * Watcher: when loan becomes APPROVED and sanctionValues are available,
+     * load the sanction template and toggle sanction mode.
+     */
     useEffect(() => {
         if (loanStatus === LoanStatus.APPROVED && sanctionValues) {
             resourcesLoaded()
             setSanctionMode(true)
         }
     }, [loanStatus, sanctionValues])
-    //Handle Sign Request Logic
+    /**
+     * handleSignRequest
+     * Trigger a sign request state and submit the filled form.
+     */
     const handleSignRequest = async () => {
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.SIGN_REQUIRED;
         setLoanStatus(LoanStatus.SIGN_REQUIRED);
         handleSubmit();
         setSanctionMode(false);
     }
-    //Handle Finish Logic
+    /**
+     * handleFinish
+     * Finalize the sanction workflow: make fields read-only, mark approved and submit.
+     */
     const handleFinish = () => {
         // simply close viewer and mark approved
         const viewer = viewerRef.current
@@ -352,7 +388,10 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         setViewerMode(false)
         setSanctionMode(false)
     }
-    //Handle Info Required Logic
+    /**
+     * handleInfoRequired
+     * Mark the loan INFO_REQUIRED, make fields editable and submit.
+     */
     const handleInfoRequired = () => {
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.INFO_REQUIRED;
         removeReadOnly();
@@ -360,7 +399,10 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         handleSubmit();
         setViewerMode(false)
     }
-    //Handle Pending Approval Logic
+    /**
+     * handlePendingApproval
+     * Transition the loan to PENDING_APPROVAL, close viewer and submit.
+     */
     const handlePendingApproval = () => {
         if (!showBtn) return
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.PENDING_APPROVAL;
@@ -369,7 +411,11 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         handleSubmit();
 
     }
-    //Check fields are filled
+    /**
+     * areAllFieldsFilled
+     * Inspect an array of form field objects and determine whether all required fields are filled.
+     * Handles radio/checkbox groups and skips manager/loan-officer signature requirements for customers.
+     */
     const areAllFieldsFilled = (fields) => {
         const radioGroups = {}
         for (const f of fields) {
@@ -394,6 +440,10 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
         return true
     }
+    /**
+     * evaluateFields
+     * Read current form fields from the viewer and update `showBtn` based on completeness.
+     */
     const evaluateFields = () => {
         try {
             const api = viewerRef.current
@@ -414,7 +464,11 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             console.warn('evaluateFields error', e)
         }
     }
-    // Handler called by viewer when form field properties change
+    /**
+     * onFormFieldPropertiesChange
+     * Viewer callback invoked when a form field changes; enforces numeric-only sanitization for
+     * matched fields, performs fallback updates and triggers a fields evaluation.
+     */
     const onFormFieldPropertiesChange = (args) => {
         if (args && args.isValueChanged) {
             try {
@@ -432,7 +486,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                     const targetName = (rawTargetName + '').toString().toLowerCase();
                     if (targetName) {
                         // If field name references numeric fields (date, phone, amount, tenure, etc.), enforce digits-only
-                        const numericKeywords = ['date','dob','dateofbirth','phone','mobile','contact','amount','tenure','number','no','age'];
+                        const numericKeywords = ['date', 'dob', 'dateofbirth', 'phone', 'mobile', 'contact', 'amount', 'tenure', 'number', 'no', 'age'];
                         let isNumericField = numericKeywords.some(k => targetName.includes(k));
                         // If the field is a signature field, skip numeric sanitization even if the name contains keywords
                         const fieldTypeRaw = (args.field && (args.field.type || args.field.fieldType || '')) || '';
@@ -496,12 +550,12 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                                 if (raw !== sanitized) {
                                     try {
                                         // If the matching field object is a signature field, skip sanitization
-                                        const fTypeRaw2 = (f && (f.type || f.fieldType || '') ) || '';
+                                        const fTypeRaw2 = (f && (f.type || f.fieldType || '')) || '';
                                         const fType2 = (fTypeRaw2 + '').toString().toLowerCase();
                                         if (fType2.includes('signature')) {
                                             console.debug('Skipping sanitization for signature field object', { targetName, fType2, raw });
                                             // ensure no numeric-alert is shown for signature fields
-                                            try { alertedFieldsRef.current.delete(targetName); } catch (e) {}
+                                            try { alertedFieldsRef.current.delete(targetName); } catch (e) { }
                                         } else {
                                             f.value = sanitized;
                                             if (typeof viewer.updateFormFieldsValue === 'function') viewer.updateFormFieldsValue(f);
@@ -570,13 +624,19 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             } catch (e) {
                 console.warn('onFormFieldPropertiesChange sanitization error', e);
             }
-            evaluateFields()
+            setTimeout(() => {
+             evaluateFields()   
+            }, 100);
         }
         if (sanctionMode) {
             checkManagerSignature();
         }
     }
-    // Also run initial evaluation when document loads
+    /**
+     * onDocumentLoad
+     * Called when the PDF document is loaded into the viewer. Runs initial field evaluation,
+     * applies read-only state depending on role/status and prepares sanction form if required.
+     */
     const onDocumentLoad = () => {
         evaluateFields();
         if ((loanStatus !== LoanStatus.INFO_REQUIRED || (loanStatus === LoanStatus.INFO_REQUIRED && (role === "Manager" || role === "Loan Officer"))) && loanStatus !== "") {
@@ -588,8 +648,11 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
 
     }
-   //Make PDF Form Fields Read Only
-    function readOnly() {
+    /**
+     * readOnly
+     * Make form fields read-only based on current loan status and sanction mode rules.
+     */
+     function readOnly() {
         const viewer = viewerRef.current
         if (!viewer) return;
         let forms = viewer.retrieveFormFields();
@@ -614,7 +677,10 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
 
         }
     }
-    //Remove Read only for PDF Form Field
+    /**
+     * removeReadOnly
+     * Remove read-only flag from all form fields (allow editing).
+     */
     function removeReadOnly() {
         const viewer = viewerRef.current
         if (!viewer) return;
@@ -623,7 +689,10 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             viewer.formDesignerModule.updateFormField(forms[i], { isReadOnly: false });
         }
     }
-    //Update the Sanction letter fields values
+    /**
+     * UpdateForm
+     * Populate sanction letter fields with values collected during approval and set them read-only.
+     */
     function UpdateForm() {
         const viewer = viewerRef.current
         if (!viewer) return;
@@ -645,7 +714,10 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
         setShowBtn(false)
     }
-    //Check the Manger signature value before approval
+    /**
+     * checkManagerSignature
+     * Verify whether the manager signature field contains a value and enable the Finish button.
+     */
     function checkManagerSignature() {
         try {
             const viewer = viewerRef.current
@@ -659,13 +731,19 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             setFinishEnabled(false)
         }
     }
-    //Set the File name for the document
+    /**
+     * downloadStart
+     * Viewer callback to set the downloaded file name for the PDF viewer.
+     */
     function downloadStart(args) {
         const viewer = viewerRef.current
         if (!viewer) return;
         viewerRef.current.downloadFileName = pdfFileName;
     }
-    //Based on Role make the Signature field read only
+    /**
+     * MakeSignatureReadOnly
+     * For non-manager/non-loan-officer roles, mark the manager and loan-officer signature fields read-only.
+     */
     function MakeSignatureReadOnly() {
         if ((role !== "Manager" && role !== "Loan Officer")) {
             const viewer = viewerRef.current
@@ -682,8 +760,12 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
     }
 
-    // Convert file to base64 (returns base64 string without data: prefix)
-    const fileToBase64 = (file) => {
+    /**
+     * fileToBase64
+     * Convert an uploaded `File` object to a base64 string (without the `data:` prefix).
+     * Returns a promise that resolves with the base64 payload.
+     */
+    const fileToBase64 = useCallback((file) => {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.readAsDataURL(file);
@@ -694,9 +776,13 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             };
             reader.onerror = (err) => reject(err);
         });
-    };
+    }, []);
 
-    const handleAttach = async (file) => {
+    /**
+     * handleAttach
+     * Read an uploaded file, convert to base64 and append it to the `uploadedFiles` state as a pending attachment.
+     */
+    const handleAttach = useCallback(async (file) => {
         try {
             const base64 = await fileToBase64(file);
             const dataUrl = `data:${file.type};base64,${base64}`;
@@ -720,14 +806,22 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             console.error('Error reading attachment', err);
             alert('Failed to read attachment');
         }
-    };
+    }, [fileToBase64]);
 
-    const handleOpenFile = () => {
+    /**
+     * handleOpenFile
+     * Trigger the hidden file input to open the native file picker.
+     */
+    const handleOpenFile = useCallback(() => {
         if (fileInputRef.current) fileInputRef.current.click();
         setShowMenu(false);
-    };
+    }, []);
 
-    // Open an attachment in the main viewer (replaces the currently loaded document)
+    /**
+     * openAttachmentInMainViewer
+     * Load a selected attachment into the main PDF viewer. Accepts data URLs, server URLs or
+     * will construct a download URL for attachments saved on the server.
+     */
     const openAttachmentInMainViewer = async (file) => {
         try {
             const viewer = viewerRef.current;
@@ -738,7 +832,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             } else if (file.url) {
                 src = file.url;
             } else if (file.name) {
-                src = `${process.env.REACT_APP_API_URL || 'http://localhost:5063'}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(pdfFileName)}/${encodeURIComponent(file.name)}`;
+                src = `${API_BASE}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(pdfFileName)}/${encodeURIComponent(file.name)}`;
             }
             if (!src) return;
             // Close attachments panel and menu first
@@ -762,7 +856,11 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
     };
 
-    const handleFileChange = async (event) => {
+    /**
+     * handleFileChange
+     * Handler for the hidden file input change event. Validates file type and forwards to `handleAttach`.
+     */
+    const handleFileChange = useCallback(async (event) => {
         const file = event.target.files && event.target.files[0];
         if (file) {
             const allowedTypes = ['application/pdf'];
@@ -775,9 +873,13 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             }
         }
         if (event && event.target) event.target.value = '';
-    };
+    }, [handleAttach]);
 
-    // Persist only the numeric attachments count for this loan and notify other tabs
+    /**
+     * persistAttachments
+     * Persist the count of non-pending attachments for the given loan/document into
+     * sessionStorage/localStorage and broadcast an update event for other tabs/components.
+     */
     const persistAttachments = (list, explicitLoanId) => {
         try {
             const count = (list || []).filter(f => !f.pending).length;
@@ -798,15 +900,18 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                 console.warn('persistAttachments: no loanId or numeric id found; skipping persist');
                 return;
             }
-            try { sessionStorage.setItem(`attachmentsCount_${id}`, String(count)); } catch (e) {}
-            try { localStorage.setItem(`attachmentsCount_${id}`, String(count)); } catch (e) {}
-            try { window.dispatchEvent(new CustomEvent('attachmentsCountUpdated', { detail: { loanId: id, count } })); } catch (e) {}
+            try { sessionStorage.setItem(`attachmentsCount_${id}`, String(count)); } catch (e) { }
+            try { localStorage.setItem(`attachmentsCount_${id}`, String(count)); } catch (e) { }
+            try { window.dispatchEvent(new CustomEvent('attachmentsCountUpdated', { detail: { loanId: id, count } })); } catch (e) { }
         } catch (e) {
             console.error('Failed to persist attachments count', e);
         }
     };
 
-    // Persist deleted attachments list to storage
+    /**
+     * persistDeletedAttachments
+     * Save the locally-tracked deleted attachment filenames for this document into storage.
+     */
     const persistDeletedAttachments = () => {
         try {
             let docId = loanId;
@@ -820,8 +925,8 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             }
             const storageKey = `deletedAttachments_${docId}`;
             const deletedList = Array.from(deletedAttachmentsRef.current);
-            try { localStorage.setItem(storageKey, JSON.stringify(deletedList)); } catch (e) {}
-            try { sessionStorage.setItem(storageKey, JSON.stringify(deletedList)); } catch (e) {}
+            try { localStorage.setItem(storageKey, JSON.stringify(deletedList)); } catch (e) { }
+            try { sessionStorage.setItem(storageKey, JSON.stringify(deletedList)); } catch (e) { }
             console.log('Persisted deleted attachments:', deletedList);
         } catch (e) {
             console.error('Failed to persist deleted attachments', e);
@@ -883,10 +988,15 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         };
     }, []);
 
+    /**
+     * fetchServerAttachments
+     * Retrieve attachment metadata for a server-hosted PDF (by filename) and populate `uploadedFiles`.
+     * Filters out items that were deleted during the current session.
+     */
     const fetchServerAttachments = async (filename) => {
         if (!filename) return;
         try {
-            const base = process.env.REACT_APP_API_URL || 'http://localhost:5063'
+            const base = API_BASE
             const resp = await fetch(`${base}/api/Authentication/GetPdfAttachments/${encodeURIComponent(filename)}`)
             if (!resp.ok) return;
             const json = await resp.json();
@@ -910,12 +1020,12 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                         id: Date.now() + idx,
                         name: fname,
                         originalName: fname,
-                        url: `${process.env.REACT_APP_API_URL || 'http://localhost:5063'}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(filename)}/${encodeURIComponent(fname)}`,
+                        url: `${API_BASE}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(filename)}/${encodeURIComponent(fname)}`,
                         size: '', type: 'application/octet-stream', uploadedAt: new Date().toLocaleString(), pending: false
                     };
                 }
                 const fname = a.fileName || a.name || a.filename || a.file || (`attachment_${idx}`)
-                const url = a.url || `${process.env.REACT_APP_API_URL || 'http://localhost:5063'}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(filename)}/${encodeURIComponent(fname)}`
+                const url = a.url || `${API_BASE}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(filename)}/${encodeURIComponent(fname)}`
                 return {
                     id: Date.now() + idx,
                     name: fname,
@@ -938,8 +1048,14 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         }
     };
 
+    /**
+     * deleteFileFromServer
+     * Attempt to delete the provided filename from multiple possible server endpoints.
+     * Uses several strategies (POST JSON, DELETE query, POST fallback) to maximize compatibility.
+     * Returns an object `{ success, data }` on success or `{ success: false, message }` on failure.
+     */
     const deleteFileFromServer = async (fileName) => {
-        const base = process.env.REACT_APP_API_URL || 'http://localhost:5063';
+        const base = API_BASE;
         const candidates = [
             `${base}/api/Authentication/DeleteFile`,
             `${base}/api/PdfViewer/DeleteFile`,
@@ -1023,6 +1139,11 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         return { success: false, message: lastError && (lastError.message || lastError) };
     };
 
+    /**
+     * handleRemoveFile
+     * Remove a single attachment by id or all attachments. For server-saved files it attempts
+     * server deletion and tracks deleted filenames to avoid showing them again.
+     */
     const handleRemoveFile = async (fileId) => {
         if (fileId) {
             // Remove specific file
@@ -1030,82 +1151,86 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
             if (fileToRemove) {
                 if (window.confirm(`Are you sure you want to remove "${fileToRemove.name}"?`)) {
                     console.log('Removing file:', fileToRemove.name);
-                    
-            // If file is pending (not yet submitted), just remove locally
-            if (fileToRemove.pending) {
-              setUploadedFiles(prev => {
-                const next = prev.filter(file => file.id !== fileId);
-                persistAttachments(next);
-                return next;
-              });
-              console.log('Pending file removed locally:', fileId);
-              alert('File removed');
-            } else {
-              // Delete from server first
-              const result = await deleteFileFromServer(fileToRemove.name);
-              // Track deleted file name (even if server deletion fails, prevent it from showing again)
-              deletedAttachmentsRef.current.add(fileToRemove.name);
-              persistDeletedAttachments(); // Save to storage
-              console.log('Added to deleted attachments list:', fileToRemove.name);
-              
-              // Remove from UI and persist
-              setUploadedFiles(prev => {
-                const next = prev.filter(file => file.id !== fileId);
-                persistAttachments(next);
-                return next;
-              });
-              console.log('File removed from UI:', fileId);
-              
-              if (result.success) {
-                alert('File deleted successfully!');
-              } else {
-                const errorMsg = result.message || 'Failed to delete file from server';
-                console.warn(errorMsg);
-                alert('File removed from view (server deletion may have failed - check console)');
-              }
-            }
+
+                    // If file is pending (not yet submitted), just remove locally
+                    if (fileToRemove.pending) {
+                        setUploadedFiles(prev => {
+                            const next = prev.filter(file => file.id !== fileId);
+                            persistAttachments(next);
+                            return next;
+                        });
+                        console.log('Pending file removed locally:', fileId);
+                        alert('File removed');
+                    } else {
+                        // Delete from server first
+                        const result = await deleteFileFromServer(fileToRemove.name);
+                        // Track deleted file name (even if server deletion fails, prevent it from showing again)
+                        deletedAttachmentsRef.current.add(fileToRemove.name);
+                        persistDeletedAttachments(); // Save to storage
+                        console.log('Added to deleted attachments list:', fileToRemove.name);
+
+                        // Remove from UI and persist
+                        setUploadedFiles(prev => {
+                            const next = prev.filter(file => file.id !== fileId);
+                            persistAttachments(next);
+                            return next;
+                        });
+                        console.log('File removed from UI:', fileId);
+
+                        if (result.success) {
+                            alert('File deleted successfully!');
+                        } else {
+                            const errorMsg = result.message || 'Failed to delete file from server';
+                            console.warn(errorMsg);
+                            alert('File removed from view (server deletion may have failed - check console)');
+                        }
+                    }
                 }
             }
         } else {
             // Remove all files
-        if (uploadedFiles.length > 0) {
-          if (window.confirm(`Are you sure you want to remove all ${uploadedFiles.length} file(s)?`)) {
-            console.log('Removing all files...');
+            if (uploadedFiles.length > 0) {
+                if (window.confirm(`Are you sure you want to remove all ${uploadedFiles.length} file(s)?`)) {
+                    console.log('Removing all files...');
 
-            // Separate pending (local) attachments vs server-saved
-            const pending = uploadedFiles.filter(f => f.pending);
-            const serverFiles = uploadedFiles.filter(f => !f.pending);
+                    // Separate pending (local) attachments vs server-saved
+                    const pending = uploadedFiles.filter(f => f.pending);
+                    const serverFiles = uploadedFiles.filter(f => !f.pending);
 
-            // Remove pending locally
-            let deletedCount = 0;
-            if (pending.length) {
-              deletedCount += pending.length;
+                    // Remove pending locally
+                    let deletedCount = 0;
+                    if (pending.length) {
+                        deletedCount += pending.length;
+                    }
+
+                    // Attempt to delete server files and track all deletions
+                    for (const file of serverFiles) {
+                        const result = await deleteFileFromServer(file.name);
+                        // Track deleted file (even if server deletion fails)
+                        deletedAttachmentsRef.current.add(file.name);
+                        if (result.success) {
+                            deletedCount++;
+                        }
+                    }
+                    persistDeletedAttachments(); // Save to storage
+
+                    // Always clear UI (we're tracking deleted files to prevent reappearance)
+                    setUploadedFiles([]);
+                    persistAttachments([]);
+                    console.log('All files removed from UI');
+                    alert(`All ${deletedCount} file(s) removed from view!`);
+                }
+            } else {
+                alert('No files to remove');
             }
-
-            // Attempt to delete server files and track all deletions
-            for (const file of serverFiles) {
-              const result = await deleteFileFromServer(file.name);
-              // Track deleted file (even if server deletion fails)
-              deletedAttachmentsRef.current.add(file.name);
-              if (result.success) {
-                deletedCount++;
-              }
-            }
-            persistDeletedAttachments(); // Save to storage
-
-            // Always clear UI (we're tracking deleted files to prevent reappearance)
-            setUploadedFiles([]);
-            persistAttachments([]);
-            console.log('All files removed from UI');
-            alert(`All ${deletedCount} file(s) removed from view!`);
-          }
-        } else {
-          alert('No files to remove');
-        }
         }
         setShowMenu(false);
     };
 
+    /**
+     * clearPendingAttachments
+     * Remove locally-pending attachments when the viewer is closed without submitting.
+     */
     const clearPendingAttachments = () => {
         // Remove pending attachments when closing without submit
         setUploadedFiles(prev => {
@@ -1120,12 +1245,17 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         });
     };
 
-    const toolbarClick = (args) => {
+    /**
+     * toolbarClick
+     * Handle clicks on the PDF viewer toolbar. Toggles the attachments panel when the
+     * custom `attachment_button` is invoked.
+     */
+    const toolbarClick = useCallback((args) => {
         if (args && args.item && args.item.id === 'attachment_button') {
             setIsAttachmentOpen(v => !v);
             setShowMenu(false);
         }
-    };
+    }, []);
 
     // Trigger a resize/reflow of the PDF viewer when the attachments panel opens/closes
     useEffect(() => {
@@ -1160,7 +1290,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                 }
                 // construct from server
                 if (viewingFile.name) {
-                    const candidate = `${process.env.REACT_APP_API_URL || 'http://localhost:5063'}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(pdfFileName)}/${encodeURIComponent(viewingFile.name)}`;
+                    const candidate = `${API_BASE}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(pdfFileName)}/${encodeURIComponent(viewingFile.name)}`;
                     if (active) setModalSrc(candidate);
                     return;
                 }
@@ -1174,9 +1304,13 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
         return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
     }, [viewingFile, pdfFileName]);
 
+    /**
+     * closeModal
+     * Close the attachment preview modal, clear URL resources and reset modal state.
+     */
     const closeModal = () => {
         setViewingFile(null); setIsAttachmentViewing(false); setModalSrc(null); setModalLoading(false);
-        if (lastObjectUrlRef.current) { try { URL.revokeObjectURL(lastObjectUrlRef.current); } catch (e) {} lastObjectUrlRef.current = null; }
+        if (lastObjectUrlRef.current) { try { URL.revokeObjectURL(lastObjectUrlRef.current); } catch (e) { } lastObjectUrlRef.current = null; }
     };
 
     // Dismiss context menu on outside click or ESC
@@ -1273,7 +1407,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                                     <>
                                         <button className={`button pdf-action-button reject`} onClick={handleReject}>Reject</button>
                                         <button className={`button pdf-action-button request`} disabled={loanStatus === LoanStatus.REJECTED} onClick={handleInfoRequired}>Info Required</button>
-                                        <button className={`button pdf-action-button final ${showBtn ? 'enabled' : 'disabled'}`} disabled={!showBtn} onClick={handlePendingApproval}>Pending Approval</button>
+                                        <button className={`button pdf-action-button final ${showBtn ? 'enabled' : 'disabled'}`} disabled={!showBtn} onClick={handlePendingApproval}>Approval</button>
                                     </>
                                 )}
 
@@ -1300,14 +1434,14 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                             setContextMenu({ visible: true, x: e.clientX, y: e.clientY, fileId: null });
                             setShowMenu(false);
                         }} className="attachment-list" style={{ padding: 12, overflowY: 'auto', flex: 1, backgroundColor: '#ffffff' }}>
-                                {uploadedFiles.length === 0 ? (
-                                <div style={{ color: '#666', marginTop: 12 }}>No files uploaded yet.<br/>Right-click to add attachments.</div>
+                            {uploadedFiles.length === 0 ? (
+                                <div style={{ color: '#666', marginTop: 12 }}>No files uploaded yet.<br />Right-click to add attachments.</div>
                             ) : (
                                 uploadedFiles.map((file) => (
                                     <div key={file.id} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, fileId: file.id }); setShowMenu(false); }} className="attachment-item" style={{ padding: '8px 6px', borderBottom: '1px solid #eee' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                                             <div style={{ flex: 1, paddingRight: 10, minWidth: 0 }}>
-                                                <div onClick={() => { setViewingFile(file); setIsAttachmentViewing(true); setContextMenu({ visible: false, x:0, y:0, fileId: null }); }} style={{ fontWeight: 'normal', marginTop: 6, marginBottom: 4, cursor: 'pointer' }} title="Open attachment">
+                                                <div onClick={() => { setViewingFile(file); setIsAttachmentViewing(true); setContextMenu({ visible: false, x: 0, y: 0, fileId: null }); }} style={{ fontWeight: 'normal', marginTop: 6, marginBottom: 4, cursor: 'pointer' }} title="Open attachment">
                                                     <span style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
                                                         <span style={{ fontSize: 14, flex: '0 0 auto' }}>📎</span>
                                                         <span style={{ display: 'block', flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }} title={file.originalName || file.name}>{file.originalName || file.name}</span>
@@ -1338,7 +1472,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                                                     style={{ width: '100%', height: '100%' }}
                                                     toolbarSettings={{ showTooltip: false, toolbarItems: [], showToolbar: false }}
                                                 >
-                                                    <Inject services={[ Toolbar, Magnification, Navigation, Annotation, LinkAnnotation, BookmarkView, ThumbnailView, Print, TextSelection, TextSearch, FormFields, FormDesigner ]}/>
+                                                    <Inject services={[Toolbar, Magnification, Navigation, Annotation, LinkAnnotation, BookmarkView, ThumbnailView, Print, TextSelection, TextSearch, FormFields, FormDesigner]} />
                                                 </PdfViewerComponent>
                                             </div>
                                         </div>
@@ -1349,18 +1483,18 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
 
                         <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} accept="application/pdf" />
                         {contextMenu.visible && (
-                            <div ref={contextMenuRef} onMouseDown={(e)=>e.stopPropagation()} style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 2000, background: '#fff', boxShadow: '0 6px 18px rgba(0,0,0,0.12)', borderRadius: 6, minWidth: 160, padding: '6px 0' }}>
+                            <div ref={contextMenuRef} onMouseDown={(e) => e.stopPropagation()} style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 2000, background: '#fff', boxShadow: '0 6px 18px rgba(0,0,0,0.12)', borderRadius: 6, minWidth: 160, padding: '6px 0' }}>
                                 <div
                                     title={canManageAttachments ? 'Add attachment' : 'Adding attachments is disabled'}
                                     style={{ padding: '8px 14px', cursor: canManageAttachments ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', opacity: canManageAttachments ? 1 : 0.5 }}
-                                    onClick={(ev)=>{ ev.stopPropagation(); setContextMenu({ visible: false, x:0,y:0,fileId:null }); if (canManageAttachments) handleOpenFile(); }}>
+                                    onClick={(ev) => { ev.stopPropagation(); setContextMenu({ visible: false, x: 0, y: 0, fileId: null }); if (canManageAttachments) handleOpenFile(); }}>
                                     <span style={{ marginRight: 8 }} className="e-icons e-plus" /> Add Attachment
                                 </div>
                                 {contextMenu.fileId != null && (
                                     <div
                                         title={canManageAttachments ? 'Delete attachment' : 'Deleting attachments is disabled'}
                                         style={{ padding: '8px 14px', cursor: canManageAttachments ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', opacity: canManageAttachments ? 1 : 0.5 }}
-                                        onClick={(ev)=>{ ev.stopPropagation(); const id = contextMenu.fileId; setContextMenu({ visible: false, x:0,y:0,fileId:null }); if (canManageAttachments && typeof handleRemoveFile === 'function') handleRemoveFile(id); }}>
+                                        onClick={(ev) => { ev.stopPropagation(); const id = contextMenu.fileId; setContextMenu({ visible: false, x: 0, y: 0, fileId: null }); if (canManageAttachments && typeof handleRemoveFile === 'function') handleRemoveFile(id); }}>
                                         <span style={{ marginRight: 8 }} className="e-icons e-trash" /> Delete
                                     </div>
                                 )}
