@@ -31,12 +31,12 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
     }
     const [showBtn, setShowBtn] = useState(true)
     const [sanctionValues, setSanctionValues] = useState(null)
-    const [finishEnabled, setFinishEnabled] = useState(false)
     const [isAttachmentOpen, setIsAttachmentOpen] = useState(false)
     const [showMenu, setShowMenu] = useState(false)
     const [uploadedFiles, setUploadedFiles] = useState([])
     const [viewingFile, setViewingFile] = useState(null)
     const [modalSrc, setModalSrc] = useState(null)
+    const [finishEnabled, setFinishEnabled] = useState(false)
     const [modalLoading, setModalLoading] = useState(false)
     const [isAttachmentViewing, setIsAttachmentViewing] = useState(false)
     const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, fileId: null });
@@ -459,7 +459,7 @@ export default function PdfViewer({ file, role, loanStatus, count, setPdfFileNam
                                 if (fnLast === tgtLast) return true;
                                 // 3) boundary-aware endsWith (avoid generic includes which cause false positives)
                                 if (fnRaw.endsWith('.' + tgtLast) || fnRaw.endsWith('_' + tgtLast) || fnRaw.endsWith('/' + tgtLast) || fnRaw.endsWith(':' + tgtLast)) return true;
-                                // no loose includes — return false to avoid matching unrelated fields (e.g., 'date' -> 'dateofbirth')
+                                // no loose includes � return false to avoid matching unrelated fields (e.g., 'date' -> 'dateofbirth')
                                 return false;
                             };
 
