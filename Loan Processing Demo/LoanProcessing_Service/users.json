@@ -1,0 +1,17 @@
+[
+  {
+    "Username": "Loan Officer",
+    "Email": "Loanofficer@gmail.com",
+    "Password": "$2a$11$iywRFgnPn9jbOHZmTT8M2O6bcq7gz.tDlVQRr0VgEqH7ZDqTtYkAS"
+  },
+  {
+    "Username": "Manager",
+    "Email": "manager@gmail.com",
+    "Password": "$2a$11$HXW8/Ne39.8rIHfMtIeFFe2U5.7.IN7sAE3N33aa9Dr.qwpz1R7Gy"
+  },
+  {
+    "Username": "Customer1",
+    "Email": "Customer1@gamil.com",
+    "Password": "$2a$11$jT6IgGAxuBquY4ZDda32yOmtTOh6Qvb1L1EItaVA1Y1msKQq1RL3y"
+  }
+]
