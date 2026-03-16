@@ -134,6 +134,13 @@
 	margin-left: 12px;
 }
 
+.pdf-action-button .caret {
+	margin-left: 8px;
+	font-size: 12px;
+	opacity: 0.9;
+	line-height: 1;
+}
+
 /* Ensure document and app root have full height to allow percentage children */
 html,
 body,

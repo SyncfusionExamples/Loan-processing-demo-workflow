@@ -213,7 +213,10 @@
   background: #fff;
   /* inset the table area from the page edges while keeping the header full width */
   margin: 0 24px;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* allow the table area to scroll within the available viewport height */
+  max-height: calc(100vh - 200px);
 }
 
 .tableWrap {
@@ -221,27 +224,21 @@
   max-width: 100%;
   overflow-x: auto;
   /* allow table content to scroll horizontally inside this box */
-  overflow-y: visible;
+  overflow-y: auto;
+  /* allow vertical scrolling when rows exceed available space */
+  max-height: 100%;
   padding: 0 6px;
   /* small internal padding, keep scroll area inside container */
   box-sizing: border-box;
 }
 
-/* Hide horizontal scrollbar visually but keep scrolling functional
-   - Webkit browsers: hide using zero-height thumb
-   - Firefox: use scrollbar-width
-   - IE/Edge legacy: -ms-overflow-style
-*/
-.tableWrap {
-  -ms-overflow-style: none;
-  /* IE and Edge */
-  scrollbar-width: none;
-  /* Firefox */
+.tableWrap::-webkit-scrollbar {
+  height: 10px;
 }
 
-.tableWrap::-webkit-scrollbar {
-  height: 0;
-  /* hide horizontal scrollbar in WebKit browsers */
+.tableWrap::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.15);
+  border-radius: 6px;
 }
 
 .loandetails-table {
@@ -281,6 +278,15 @@
   text-align: center;
   white-space: nowrap;
   border-right: none;
+}
+
+/* Comments column: allow wrapping and take remaining space */
+.commentsCol {
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  padding-right: 12px;
 }
 
 /* Status column: wider and left-aligned to avoid overlap with action buttons */
