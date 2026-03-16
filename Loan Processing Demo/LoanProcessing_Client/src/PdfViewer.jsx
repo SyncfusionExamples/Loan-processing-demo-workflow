@@ -1039,7 +1039,7 @@ if (pdfFileName === 'Loan_Application_Form' &&
       try {
         const roleLowerEval = (role || '').toString().toLowerCase()
         const storedLower = (storedUserRole || '').toString().toLowerCase()
-        const isLoanOfficerEval = ((roleLowerEval.includes('loan') && roleLowerEval.includes('officer')) || roleLowerEval.includes('loanofficer') || storedLower.includes('loan'))
+        const isLoanOfficerEval = ((roleLowerEval.includes('loan') && roleLowerEval.includes('officer')) || roleLowerEval.includes('loanofficer') || storedLower.includes('loan officer') || storedLower.includes('loanofficer'))
         const isManagerEval = roleLowerEval.includes('manager') || storedLower.includes('manager')
         if (isLoanOfficerEval || isManagerEval) {
           setShowBtn(true)
