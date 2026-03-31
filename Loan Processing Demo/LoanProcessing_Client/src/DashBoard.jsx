@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef, } from 'react';
+
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Authentication from './Authentication';
 import './DashBoard.css'
 import PdfViewer from './PdfViewer.jsx'
 import { LoanStatus } from './constants/loanStatus.js'
-
 const DashBoard = () => {
   const [loggedInUser, setUser] = useState(null);
   const [rows, setRows] = useState([]);
@@ -23,298 +23,299 @@ const DashBoard = () => {
   const [selectedLoanId, setSelectedLoanId] = useState(null);
   const [attachmentsVersion, setAttachmentsVersion] = useState(0);
   const [attachmentCounts, setAttachmentCounts] = useState({});
-
-  //File Path of respective file
+  // Persisted comments helper (keeps latest comment per document across refreshes)
+  const PERSISTED_COMMENTS_KEY = 'loanComments_v1'
+  const getPersistedComments = () => {
+    try {
+      return JSON.parse(localStorage.getItem(PERSISTED_COMMENTS_KEY)
+        ?? '{}') ?? {}
+    } catch (e) { return {} }
+  }
+  const persistComment = (documentId, fileName, commentText) => {
+    try {
+      const id = documentId ? String(documentId) : ((fileName && (fileName.match(/(\d+)(?=\.pdf$)/) ?? [] )[0]) ?? null)
+      if (!id) return
+      const all = getPersistedComments()
+      all[String(id)] = { comment: commentText, fileName: fileName }
+      localStorage.setItem(PERSISTED_COMMENTS_KEY, JSON.stringify(all))
+    } catch (e) { /* ignore */ }
+  }
+  // Professional titles for dashboard header (supports both role and legacy username)
+  const roleTitles = {
+    customer: 'Loan Requestor',
+    'loan-officer': 'Loan Officer',
+    manager: 'Branch Manager',
+    'site-engineer': 'Site Office',
+    // Backward-compatible keys
+    'Manager': 'Branch Manager',
+    'Loan Officer': 'Loan Officer',
+    'Customer': 'Loan Requestor',
+    'Site Engineer': 'Site Office',
+    'Site Office': 'Site Office'
+  };
+  // Privileged: Manager, Loan Officer, Site Office (covers username OR role; case-insensitive; with hyphen variants)
+  const isPrivileged = (user) => {
+    const uname = (user?.username ?? user?.name ?? '').trim().toLowerCase();
+    const urole = (user?.role ?? '').trim().toLowerCase();
+    const privileged = new Set([
+      'manager',
+      'loan officer', 'loan-officer',
+      'site office', 'site-office', 'site engineer', 'site-engineer'
+    ]);
+    return privileged.has(uname) || privileged.has(urole);
+  };
+  // File Path of respective file
   const file = `wwwroot/pdfs/${pdfFileName}.pdf`
   const openViewerForNew = () => {
     setPdfFileName("Loan_Application_Form");
     setViewerMode(true);
     setLoanStatus("");
-    setSelectedLoanId(String(nextId));
+    setSelectedLoanId(null);
   };
-
+  // Normalize user role into canonical labels used across the app
+  const canonicalRole = useMemo(() => {
+    try {
+      const r = (loggedInUser?.role ?? loggedInUser?.username ?? '').toString().toLowerCase();
+      if (!r) return '';
+      if (r.includes('manager')) return 'Manager';
+      if (r.includes('loan') && r.includes('officer')) return 'Loan Officer';
+      // treat Site Officer/Engineer variants as Site Office
+      if (r.includes('site') && (r.includes('engineer') || r.includes('office'))) return 'Site Office';
+      return 'Customer';
+    } catch (e) { return '' }
+  }, [loggedInUser]);
   //Get the ID from the session storage
   useEffect(() => {
-    try {
-      sessionStorage.setItem('nextId', String(nextId));
-    } catch (e) { /* ignore */ }
+    try { sessionStorage.setItem('nextId', String(nextId)); } catch (e) { /* ignore */ }
   }, [nextId]);
-
   const prevNextId = useRef(nextId);
-
   //Update the Row When the Loan application added
   useEffect(() => {
+    const norm = (s) => (s ?? '').toString().trim().toLowerCase().replace(/\.pdf$/, '');
     if (prevNextId.current !== nextId) {
       const createdId = String(prevNextId.current);
-
-      // prepare normalized display name (remove .pdf if present)
-      const rawName = (pdfFileName || `Loan_Application_Form_${createdId}`) || '';
+      const rawName = (pdfFileName ?? `Loan_Application_Form_${createdId}`) ?? '';
       const displayName = rawName.replace(/\.pdf$/i, '');
-
       setRows(prev => {
-        // avoid duplicates by id or filename
         const existsById = prev.some(r => String(r.id) === String(createdId));
-        const existsByFile = prev.some(r => (r.fileName || '').toString().trim().toLowerCase() === displayName.toString().trim().toLowerCase());
+        const existsByFile = prev.some(r => (norm(r.fileName) === norm(displayName))
+          || (norm(r.customer) === norm(displayName)));
         if (existsById || existsByFile) return prev;
         return [
           ...prev,
-          {
-            id: createdId,
-            customer: displayName,
-            status: loanStatus || 'SUBMITTED',
-            viewText: 'View',
-            fileName: rawName
-          }
+          { id: createdId, customer: displayName, status: LoanStatus.NEW, comments: 'A new loan application has been created.', viewText: 'View', fileName: rawName }
         ];
       });
+      try { persistComment(createdId, rawName, 'A new loan application has been created.') } catch (e) { }
     }
     prevNextId.current = nextId;
   }, [nextId, pdfFileName, loanStatus]);
-
-  //Retrive Files from server based on Roles
+  //Retrive Files from server based on Roles (cache-busted + event-driven refresh)
   useEffect(() => {
     const loadSavedFiles = async () => {
       try {
-
-        const user = loggedInUser ?? JSON.parse(localStorage.getItem("user") || "null");
-        const username = user?.username || user?.name || user?.id || user?.userId;
+        const user = loggedInUser ?? JSON.parse(localStorage.getItem("user") ?? "null");
+        const username = user?.username ?? user?.name ?? user?.id ?? user?.userId;
         if (!username) return;
-
-        // treat these exact usernames as privileged
-        const privilegedNames = ['Manager', 'Loan Officer']; // add variations you need
-        const isPrivileged = privilegedNames.includes(username);
-
-        // build URL: privileged -> request ALL, else request only this user
-        const base = process.env.REACT_APP_API_URL || 'http://localhost:5063';
-        const url = isPrivileged
-          ? `${base}/api/Authentication/GetUserFiles?username=ALL`
-          : `${base}/api/Authentication/GetUserFiles?username=${encodeURIComponent(username)}`;
-
-        const resp = await fetch(url); // include if your API uses cookies
-        if (!resp.ok) {
-          const body = await resp.text().catch(() => '<no body>');
-          console.warn('GetUserFiles failed', resp.status, body);
-          return;
-        }
+        const base = process.env.REACT_APP_API_URL ?? 'http://localhost:5063';
+        const ts = Date.now(); // cache-buster
+        const url = isPrivileged(user)
+          ? `${base}/api/Authentication/GetUserFiles?username=ALL&_ts=${ts}`
+          : `${base}/api/Authentication/GetUserFiles?username=${encodeURIComponent(username)}&_ts=${ts}`;
+        const resp = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
+        if (!resp.ok) { console.warn('GetUserFiles failed', resp.status); return; }
         const list = await resp.json();
         if (!Array.isArray(list)) return;
         list.reverse();
         const mapped = list.map(item => {
-          const docId = item.documentId || item.documentid || item.DocumentId || '';
-          const rawName = (item.fileName || item.file || item.FileName || item.customerName || item.customer || '').toString().trim();
-          // remove .pdf extension if present
+          const docId = item.documentId ?? item.documentid ?? item.DocumentId ?? '';
+          const rawName = (item.fileName ?? item.file ?? item.FileName ?? item.customerName ?? item.customer ?? '').toString().trim();
           const noExt = rawName.replace(/\.pdf$/i, '');
-          // remove any existing trailing _<docId> so we don't duplicate
           const baseName = docId ? noExt.replace(new RegExp(`_${docId}$`, 'i'), '') : noExt;
-          // final display: baseName + _docId (only if docId present)
           let displayName = baseName;
-          if (!baseName.toLowerCase().includes("sanction")) {
+          if (!baseName.toLowerCase().includes('sanction')) {
             displayName = docId ? `${baseName}_${docId}` : baseName;
           }
-          return {
-            id: String(docId),
-            customer: displayName,
-            status: item.status || 'SUBMITTED',
-            viewText: 'View',
-            fileName: rawName
-          };
+          return { id: String(docId), customer: displayName, status: item.status ?? 'NEW', comments: item.comments ?? '', viewText: 'View', fileName: rawName };
         });
-        setRows(mapped);
-      } catch (e) {
-        console.warn("loadSavedFiles error", e);
-      }
+        setRows(prevRows => {
+          const prev = prevRows ?? [];
+          const persisted = getPersistedComments();
+          return mapped.map(m => {
+            const existing = prev.find(p => String(p.id) === String(m.id));
+            const pid = String(m.id ?? '');
+            const persistedComment = (persisted && persisted[pid] && persisted[pid].comment) ? persisted[pid].comment : null
+            return { ...m, comments: (persistedComment ?? m.comments ?? (existing && existing.comments) ?? '') };
+          });
+        });
+      } catch (e) { console.warn("loadSavedFiles error", e); }
     };
     loadSavedFiles();
     const handler = () => loadSavedFiles();
     window.addEventListener('userFilesChanged', handler);
-    return () => window.removeEventListener('userFilesChanged', handler);
+    // Refresh when tab regains focus (covers cross-role switch)
+    const visHandler = () => { if (!document.hidden) handler(); };
+    document.addEventListener('visibilitychange', visHandler);
+    // Listen for explicit comment additions from viewer (e.g., new application comment)
+    const commentHandler = (e) => {
+      try {
+        const d = e && e.detail ? e.detail : null;
+        if (!d || !d.comments) return;
+        const documentId = d.documentId ? String(d.documentId) : null;
+        const fileName = (d.fileName ?? '').toString().trim();
+        const commentText = d.comments ?? '';
+        const norm = (s) => (s ?? '').toString().trim().toLowerCase().replace(/\.pdf$/, '');
+        setRows(prev => {
+          const next = (prev ?? []).map(r => {
+            const rid = String(r.id ?? '');
+            const rFile = (r.fileName ?? '').toString().trim();
+            const rCust = (r.customer ?? '').toString().trim();
+            if ((documentId && rid === documentId)
+              || (fileName && (norm(rFile) === norm(fileName)
+              || norm(rCust) === norm(fileName)))) {
+              return { ...r, comments: commentText };
+            }
+            return r;
+          });
+          // Robust match: compare by id OR normalized file name (ignoring .pdf)
+          const matched = next.some(r => ((documentId && String(r.id) === documentId)
+            || (fileName && (norm(r.fileName) === norm(fileName)
+            || norm(r.customer) === norm(fileName)))))
+          if (!matched) {
+            const newId = documentId ?? String((fileName && (fileName.match(/(\d+)(?=\.pdf$)/) ?? [] )[0]) ?? Date.now());
+            const rawName = fileName ?? `Loan_Application_Form_${newId}`;
+            const displayName = rawName.replace(/\.pdf$/i, '');
+            const added = { id: String(newId), customer: displayName, status: LoanStatus.NEW, comments: commentText, viewText: 'View', fileName: rawName }
+            try { persistComment(newId, rawName, commentText) } catch (e) { }
+            return [...next, added];
+          }
+          return next;
+        });
+        try { persistComment(documentId, fileName, commentText) } catch (e) { }
+      } catch (err) { /* silent */ }
+    };
+    window.addEventListener('loanCommentAdded', commentHandler);
+    return () => {
+      window.removeEventListener('userFilesChanged', handler);
+      window.removeEventListener('loanCommentAdded', commentHandler);
+      document.removeEventListener('visibilitychange', visHandler);
+    };
   }, [loggedInUser]);
-
-  // Keep the table rows in sync when the currently-open file or its status changes
+  // Sync row statuses (ID-based rather than by customer name)
   useEffect(() => {
     if (!pdfFileName) return;
-    setRows((prev) =>
-      prev.map((r) => (r.customer === pdfFileName ? { ...r, status: loanStatus } : r))
-    );
+    const m = (pdfFileName.match(/(\d+)(?=\.pdf$)/) ?? pdfFileName.match(/\_(\d+)$/) ?? []);
+    const idFromName = m[1] ? String(m[1]) : null;
+    setRows(prev => prev.map(r => (idFromName && String(r.id) === idFromName ? { ...r, status: loanStatus } : r)));
   }, [pdfFileName, loanStatus]);
-
-  //Change the actionBar state when PDF Viewer open and close
-  useEffect(() => {
-    if (!viewerMode) setActionBar(true);
-  }, [viewerMode]);
-
-  // Ensure the viewer shows the file associated with the clicked row
+  useEffect(() => { if (!viewerMode) setActionBar(true); }, [viewerMode]);
   const onView = (row) => {
     if (row && row.customer) setPdfFileName(row.customer)
     if (row && row.status) setLoanStatus(row.status)
     setViewerMode(true);
     setSelectedLoanId(String(row?.id ?? ''));
-    if (loggedInUser?.username === 'Loan Officer' && row?.status === LoanStatus.SUBMITTED) {
+    if (canonicalRole === 'Loan Officer' && row?.status === LoanStatus.NEW) {
       setLoanStatus(LoanStatus.UNDER_REVIEW);
     }
     const clickedName = (row && row.customer) ? String(row.customer) : '';
     const isSanction = clickedName.toLowerCase().includes('sanction');
     setSanctionMode(Boolean(isSanction));
-    changeActionBar(row);
     setActionBar(Boolean(changeActionBar(row)));
   };
-
-  // Decide action bar visibility based on role, status and whether this is a sanction document;
   function changeActionBar(row) {
-    const role = loggedInUser?.username;
+    const role = canonicalRole ?? (loggedInUser?.username);
     const status = row?.status;
     const name = (row && row.customer) ? String(row.customer) : '';
     const sanction = name.toLowerCase().includes('sanction');
-    if (status === LoanStatus.REJECTED) {
-      return false;
-    }
-    if (role === 'Manager') {
-      // Manager only sees the action bar for Pending Approval
-      return status === LoanStatus.PENDING_APPROVAL;
-    }
-    if (role === 'Loan Officer') {
-      // Loan Officer should not see the action bar when viewing a sanction letter
-      return !sanction;
-    }
-    // Customers: hide the bar for submitted/rejected/pending/approved statuses
-    return !(status === LoanStatus.SUBMITTED || status === LoanStatus.PENDING_APPROVAL || status === LoanStatus.APPROVED);
+    if (status === LoanStatus.REJECTED) return false;
+    if (role === 'Manager') return status === LoanStatus.PENDING_APPROVAL;
+    if (role === 'Loan Officer') return !sanction;
+    return !(status === LoanStatus.NEW
+      || status === LoanStatus.PENDING_APPROVAL
+      || status === LoanStatus.APPROVED);
   }
-
-  //Update the JSON file on the server based on the Status
-  const didMount = useRef(false);
-  // Listen for per-loan attachment count changes from other tabs/windows
   useEffect(() => {
-    const onStorage = (e) => {
-      if (e && e.key && e.key.startsWith('attachmentsCount_')) {
-        setAttachmentsVersion(v => v + 1);
-      }
-    };
-    const onCustom = (e) => {
-      setAttachmentsVersion(v => v + 1);
-    };
+    const onStorage = (e) => { if (e && e.key && e.key.startsWith('attachmentsCount_')) setAttachmentsVersion(v => v + 1); };
+    const onCustom = () => setAttachmentsVersion(v => v + 1);
     window.addEventListener('storage', onStorage);
     window.addEventListener('attachmentsCountUpdated', onCustom);
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('attachmentsCountUpdated', onCustom);
-    };
+    return () => { window.removeEventListener('storage', onStorage); window.removeEventListener('attachmentsCountUpdated', onCustom); };
   }, []);
-
-  // Trigger a refresh of counts when returning from viewer in same tab
+  useEffect(() => { setAttachmentsVersion(v => v + 1); }, [viewerMode]);
+  // Server-based attachment counts (left as-is from earlier improvement)
   useEffect(() => {
-    setAttachmentsVersion(v => v + 1);
-  }, [viewerMode]);
-
-  // Recompute attachment counts map whenever rows or attachmentsVersion change
-  useEffect(() => {
-    const map = {};
-    for (const r of rows) {
-      const key = `attachmentsCount_${r.id}`;
-      const v = sessionStorage.getItem(key) || localStorage.getItem(key);
-      map[r.id] = v ? parseInt(v, 10) || 0 : 0;
-    }
-    setAttachmentCounts(map);
-  }, [attachmentsVersion, rows]);
+    if (!rows || rows.length === 0) { setAttachmentCounts({}); return; }
+    const base = process.env.REACT_APP_API_URL ?? 'http://localhost:5063';
+    let alive = true;
+    (async () => {
+      const entries = await Promise.all(rows.map(async (r) => {
+        const raw = (r.fileName ?? r.customer ?? '').trim();
+        if (!raw) return [r.id, 0];
+        const name = /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
+        try {
+          const resp = await fetch(`${base}/api/Authentication/GetPdfAttachments/${encodeURIComponent(name)}`);
+          if (!resp.ok) return [r.id, 0];
+          const list = await resp.json();
+          return [r.id, Array.isArray(list) ? list.length : 0];
+        } catch { return [r.id, 0]; }
+      }));
+      if (!alive) return;
+      const map = {}; entries.forEach(([id, c]) => map[id] = c); setAttachmentCounts(map);
+    })();
+    return () => { alive = false; };
+  }, [rows, attachmentsVersion]);
+  const didMount = useRef(false);
   useEffect(() => {
     if (!didMount.current) { didMount.current = true; return; }
-
     (async () => {
       try {
-        const user = JSON.parse(localStorage.getItem('user') || 'null');
-        const username = user?.username || '';
-
-        const base = process.env.REACT_APP_API_URL || 'http://localhost:5063';
-        const documentId = (pdfFileName && (pdfFileName.match(/(\d+)(?=\.pdf$|$)/) || [])[0]) || null;
-
+        const user = JSON.parse(localStorage.getItem('user') ?? 'null');
+        const username = user?.username ?? '';
+        const base = process.env.REACT_APP_API_URL ?? 'http://localhost:5063';
+        const documentId = (pdfFileName && ((pdfFileName.match(/(\d+)(?=\.pdf$)/) ?? [] )[0])) ?? null;
         const payload = { DocumentId: documentId, FileName: pdfFileName, Status: loanStatus };
-
-        const resp = await fetch(`${base}/api/Authentication/UpdateFileStatus`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-
-        const text = await resp.text().catch(() => '<no body>');
-        if (!resp.ok) return;
-
+        // const resp = await fetch(`${base}/api/Authentication/UpdateFileStatus`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        // if (!resp.ok) return;
         window.dispatchEvent(new CustomEvent('userFilesChanged', { detail: { documentId, fileName: pdfFileName, username } }));
-      } catch (e) {
-        console.warn('UpdateFileStatus error', e);
-      }
+      } catch (e) { console.warn('UpdateFileStatus error', e); }
     })();
   }, [loanStatus]);
-
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("user");
-      if (saved) setUser(JSON.parse(saved));
-    } catch {/* ignore */ }
+    try { const saved = localStorage.getItem("user"); if (saved) setUser(JSON.parse(saved)); } catch { }
   }, []);
-
-  //Remove the Item when Looged Out
-  const logout = () => {
-    localStorage.removeItem("user");
-    setUser(null);
-  };
-  if (!loggedInUser) {
-    return <Authentication onLogin={setUser} />;
-  }
-  //Render the PDF Viewer When ViewMode is true
+  const logout = () => { localStorage.removeItem("user"); setUser(null); };
+  if (!loggedInUser) { return <Authentication onLogin={setUser} />; }
   if (viewerMode) {
     return (
       <div>
         <div className="pdf-header">
-          <div className="pdf-title">{pdfFileName.replace(/_/g, ' ').replace(/\.pdf$/i, '')}</div>
+          <div className="pdf-title">{pdfFileName.replace(/\_/g, ' ').replace(/\.pdf$/i, '')}</div>
           <button className="pdf-close" onClick={() => { setViewerMode(false); setLoanStatus(loanStatus) }} aria-label="Close viewer">✕</button>
         </div>
-        <PdfViewer file={file} role={loggedInUser.username} loanStatus={loanStatus} count={nextId} setFileCount={setNextId} setPdfFileName={setPdfFileName} setViewerMode={setViewerMode} setLoanStatus={setLoanStatus} pdfFileName={pdfFileName} sanctionMode={sanctionMode} setSanctionMode={setSanctionMode} actionBar={actionBar} loanId={selectedLoanId} />
+        <PdfViewer file={file} role={canonicalRole} loanStatus={loanStatus} count={nextId} setFileCount={setNextId} setPdfFileName={setPdfFileName} setViewerMode={setViewerMode} setLoanStatus={setLoanStatus} pdfFileName={pdfFileName} sanctionMode={sanctionMode} setSanctionMode={setSanctionMode} actionBar={actionBar} loanId={selectedLoanId} />
       </div>
     )
   }
-
   return (
     <div className="dashboard-page">
-      {/* Header bar (blue) */}
       <div className='dashborad_header'>
         <div className='dashboard'>
-          <div>{loggedInUser ? `Hi ${loggedInUser.username}` : 'Dashboard'}</div>
+          <div>{loggedInUser ? (loggedInUser.displayTitle ?? roleTitles[loggedInUser.role] ?? roleTitles[loggedInUser.username] ?? 'Dashboard') : 'Dashboard'}</div>
           <div>
-            <button type="button" onClick={logout} className="addBtn">
-              Logout
-            </button>
+            <button type="button" onClick={logout} className="addBtn">Logout</button>
           </div>
         </div>
-
-        {/* RIGHT: Logout */}
-
       </div>
       <div className="loandetails-container">
         <div className='loandetails-header'>
-          <div >Loan Dashboard</div>
-          {
-            loggedInUser && (loggedInUser.username !== "Manager" && loggedInUser.username !== "Loan Officer") && (
-              <button
-                type="button"
-                onClick={() => openViewerForNew()}
-                aria-label="Create row"
-                title="Create row"
-                className="addBtn"
-              >
-                Create +
-              </button>
-            )}
+          <div>Loan Dashboard</div>
+          {loggedInUser && (canonicalRole !== "Manager" && canonicalRole !== "Loan Officer" && canonicalRole !== 'Site Office') && (
+            <button type="button" onClick={() => openViewerForNew()} aria-label="Create row" title="Create row" className="addBtn">Create +</button>
+          )}
         </div>
-
-        {/* Table in its own frame, visually separate from header/details */}
         <div className="frame">
           <div className="tableWrap">
-
-            <style>{`
-      [data-hover="rows"] tbody tr:hover td {
-        background: #f3f4f6;
-        
-      }
-    `}</style>
+            <style>{`[data-hover="rows"] tbody tr:hover td { background: #f3f4f6; }`}</style>
             <table className="loandetails-table" data-hover="rows">
               <thead>
                 <tr>
@@ -322,34 +323,22 @@ const DashBoard = () => {
                   <th className="th">Application Name</th>
                   <th className="th statusCol">Status</th>
                   <th className="th lastCol">Action</th>
-                  <th className="th lastCol">Attachments</th>
+                  <th className="th lastCol">Comments</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="emptyCell">
-                      No loan applications created. Click "Create +" to submit a new application.
-                    </td>
-                  </tr>
+                  <tr><td colSpan={5} className="emptyCell">No loan applications created. Click "Create +" to submit a new application.</td></tr>
                 ) : (
                   rows.map((r, idx) => (
                     <tr key={`${r.id}-${idx}`}>
                       <td className="td idCol">{r.id}</td>
-                      <td className="td">{r.customer}</td>
+                      <td className="td">{`Loan_Requestor_${r.id}`}</td>
                       <td className="td statusCol">{r.status}</td>
                       <td className="td lastCol">
-                        <button
-                          type="button"
-                          onClick={() => onView(r)}
-                          className="viewBtn"
-                        >
-                          {r.viewText}
-                        </button>
+                        <button type="button" onClick={() => onView(r)} className="viewBtn">{r.viewText}</button>
                       </td>
-                      <td className="td idCol">
-                        <span className="attachCount">({attachmentCounts[r.id] || 0})</span>
-                      </td>
+                      <td className="td commentsCol">{r.comments ?? ''}</td>
                     </tr>
                   ))
                 )}
@@ -361,6 +350,4 @@ const DashBoard = () => {
     </div>
   );
 };
-
-// styles moved to DashBoard.css — removed inline `styles` object.
 export default DashBoard;
