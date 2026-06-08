@@ -57,16 +57,23 @@
 	bottom: 0px;
 	left: 20px;
 	right: 20px;
-	height: 50px;
+	height: 56px; /* slightly reduced height for a tighter layout */
 	/* bar height */
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	z-index: 1200;
 	pointer-events: auto;
-	background: rgba(195, 193, 193, 0.682);
-	border-radius: 8px;
+	background: #ffffff !important;
+	/* only round the bottom corners; keep top corners square */
+	border-top-left-radius: 0 !important;
+	border-top-right-radius: 0 !important;
+	border-bottom-left-radius: 8px !important;
+	border-bottom-right-radius: 8px !important;
 	box-shadow: 0 6px 18px rgba(2, 6, 23, 0.05);
+	border: 1px solid rgba(0,0,0,0.06);
+	padding-top: 4px;
+	padding-bottom: 4px;
 }
 
 .pdf-actionbar-inner {
@@ -75,18 +82,19 @@
 	justify-content: flex-end;
 	align-items: center;
 	padding-right: 40px;
+	  gap: 10px; 
 }
 
 .pdf-actionbar .pdf-action-button {
-	height: 42px;
-	/* within 50-80px range */
+	height: 44px;
+	/* reduced button height to match the smaller bar */
 	min-width: 140px;
-	border-radius: 10px;
+	border-radius: 8px;
 	border: none;
 	/* remove default button border */
-	font-size: 18px;
-	box-shadow: 0 6px 18px rgba(2, 6, 23, 0.08);
-	margin: 0;
+	font-size: 15px;
+	box-shadow: 0 4px 12px rgba(2, 6, 23, 0.06);
+	margin: 0 12px 0 0;
 	/* remove default margins */
 	display: inline-flex;
 	/* make button inline-flex */
@@ -99,11 +107,21 @@
 	cursor: pointer;
 }
 
+.pdf-actionbar-inner {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding-right: 30px;   /* ✅ reduce this */
+}
+
+
 /* Role-specific color variants */
 .pdf-action-button.approve {
-	background: #bfe0ff;
-	/* light blue */
-	color: #0b3a66;
+	/* initial (inactive) appearance: white pill matching the action bar */
+	background: #ffffff;
+	color: #0b1f5e;
+	border: 1px solid rgba(0,0,0,0.06);
+	border-radius: 8px;
 }
 
 .pdf-action-button.reject {
@@ -116,17 +134,39 @@
 }
 
 .pdf-action-button.final {
-	background: #f2f21b;
-	;
-	/* light yellow */
-	color: #343432;
+	background: #1e40af; /* primary color */
+	color: #ffffff;
+	box-shadow: 0 2px 8px rgba(30, 64, 175, 0.15);
+}
+.pdf-action-button.final:hover {
+	background: #1b3aa0;
 }
 
 .pdf-action-button.request {
-	background: #ede9e9;
-	;
-	/* light yellow */
-	color: #393938;
+	/* Make Sign Request a white pill with blue outline and blue text */
+	background: #ffffff;
+	color: #0b5cff;
+	border: 1px solid #0b5cff;
+	box-shadow: none;
+}
+
+/* When the request button is enabled, keep it as white with blue border/text */
+.pdf-actionbar .pdf-action-button.request.enabled {
+	background: #ffffff !important;
+	color: #0b5cff !important;
+	border: 1px solid #0b5cff !important;
+	box-shadow: 0 2px 8px rgba(11,92,255,0.08) !important;
+}
+.pdf-actionbar .pdf-action-button.request.enabled:hover {
+	background: rgba(11,92,255,0.03) !important;
+}
+
+/* Disabled state: muted border and text */
+.pdf-actionbar .pdf-action-button.request.disabled {
+	background: #ffffff;
+	color: #6b7280;
+	border: 1px solid rgba(0,0,0,0.06);
+	box-shadow: none;
 }
 
 /* spacing between multiple action buttons */
@@ -164,16 +204,17 @@ body,
 	cursor: not-allowed !important;
 	opacity: 1;
 	border: none;
-	margin-right: 10px;
+	margin-right: -10px;
 }
 
 /* Enabled / disabled visual styles for pdf action buttons */
 .pdf-action-button.enabled {
-	background: #1e40af;
+	  background: #6d28d9;
 	/* dark blue */
 	color: #ffffff;
 	box-shadow: 0 2px 8px rgba(30, 64, 175, 0.15);
 	transition: background 160ms ease;
+	margin-right: -10px;
 }
 
 .pdf-action-button.enabled:hover {
@@ -189,6 +230,37 @@ body,
 	box-shadow: none;
 }
 
+/* Make the Submit button look like a solid white rectangle with no corner radius */
+.pdf-actionbar .pdf-action-button.approve.enabled {
+	/* enabled appearance: curved primary blue button */
+	
+ background: #6d28d9 !important;
+  color: #ffffff !important;
+  box-shadow: 0 6px 18px rgba(109, 40, 217, 0.25) !important;
+	border-radius: 8px !important;
+	border: none !important;
+	align-self: center !important;
+	margin-top: 0 !important;
+	margin-right: -10px;
+}
+.pdf-actionbar .pdf-action-button.approve.enabled:hover {
+background: #5b21b6 !important;
+}
+
+/* More specific override: ensure any inner Syncfusion elements also follow the corner radii */
+.pdf-actionbar .pdf-action-button.approve,
+.pdf-actionbar .pdf-action-button.approve *,
+.pdf-actionbar .pdf-action-button.approve::before,
+.pdf-actionbar .pdf-action-button.approve::after,
+.pdf-actionbar .pdf-action-button.approve.enabled,
+.pdf-actionbar .pdf-action-button.approve.enabled *,
+.pdf-actionbar .pdf-action-button.approve.enabled::before,
+.pdf-actionbar .pdf-action-button.approve.enabled::after {
+	/* Ensure both enabled and disabled Submit (approve) buttons and their inner elements
+		 consistently use the same rounded corners so there is no visual seam. */
+	border-radius: 8px !important;
+}
+
 /* Header overlay showing filename and close control */
 .pdf-header {
 	position: relative;
@@ -201,7 +273,7 @@ body,
 	/* deep purple gradient */
 	color: #ffffff;
 	padding: 18px 20px;
-	border-radius: 8px;
+	border-radius: 0 !important;
 	box-shadow: 0 4px 18px rgba(2, 6, 23, 0.18);
 	margin-bottom: 10px;
 
@@ -211,23 +283,26 @@ body,
 	font-weight: 600;
 	color: rgba(255, 255, 255, 0.95);
 	padding: 6px 10px;
-	border-radius: 8px;
+	border-radius: 0 !important;
 }
 
 .pdf-close {
-	background: rgba(255, 255, 255, 0.95);
-	border: 1px solid #e6eefc;
-	height: 36px;
+	background: transparent;
+	border: none;
+	height: 32px;
 	width: 36px;
-	border-radius: 8px;
+	border-radius: 0 !important;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	cursor: pointer;
+	box-shadow: none !important;
+	color: rgba(255, 255, 255, 0.95);
+	font-weight: bold; 
 }
 
 .pdf-close:hover {
-	background: #fff;
+	background: rgba(255,255,255,0.06);
 }
 
 /* Attachment panel styles - match Syncfusion toolbar height */
@@ -259,6 +334,33 @@ body,
 	overflow-y: auto;
 }
 
+/* Attachment menu items: smaller text and interactive affordances */
+.attachment-menu .menu-item {
+	font-size: 14px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background-color 140ms ease, transform 90ms ease;
+	display: block;
+	color: #374151;
+}
+.menu-item {
+	font-size: 14px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background-color 140ms ease, transform 90ms ease;
+	display: block;
+	color: #374151;
+}
 .attachment-menu .menu-item:hover {
-	background-color: #f5f5f5;
+	background-color: rgba(0,0,0,0.04);
+	transform: translateY(-1px);
+}
+.attachment-menu .menu-item:active {
+	transform: translateY(0);
+}
+.attachment-menu .menu-item:focus {
+	outline: 2px solid rgba(99,102,241,0.18);
+	outline-offset: 2px;
 }
