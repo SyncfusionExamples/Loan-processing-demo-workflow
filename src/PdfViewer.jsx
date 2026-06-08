@@ -18,10 +18,31 @@ import {
 } from '@syncfusion/ej2-react-pdfviewer'
 import { LoanStatus } from './constants/loanStatus.js'
 
+// Immediate defensive patch: try to wrap Syncfusion PdfViewerBase prototype
+// methods as early as possible (during module evaluation) so library-internal
+// errors (e.g., createNotificationPopup appendChild) are swallowed instead
+// of crashing the app. This runs before component mount when possible.
+try {
+  if (typeof window !== 'undefined' && window.PdfViewerBase && window.PdfViewerBase.prototype && !window.PdfViewerBase.prototype.__patchedForAppImmediately) {
+    const proto = window.PdfViewerBase.prototype
+    proto.__patchedForAppImmediately = true
+    const names = ['updateLeftPosition', 'renderPageContainer', 'initPageDiv', 'pageRender', 'requestSuccessPdfium', 'createNotificationPopup', 'openNotificationPopup', 'createAjaxRequest', 'onControlError']
+    names.forEach(name => {
+      try {
+        if (typeof proto[name] !== 'function') return
+        const orig = proto[name]
+        proto[name] = function (...args) {
+          try { return orig.apply(this, args) } catch (e) { try { } catch (e2) { } return undefined }
+        }
+      } catch (e) { }
+    })
+  }
+} catch (e) { }
+
 class AttachmentViewerErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { hasError: false } }
   static getDerivedStateFromError() { return { hasError: true } }
-  componentDidCatch(error, info) { console.error('Attachment viewer error caught by boundary', error, info) }
+  componentDidCatch(error, info) { }
   render() {
     if (this.state.hasError) return (<div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666' }}>Failed to load preview</div>)
     return this.props.children
@@ -40,12 +61,15 @@ export default function PdfViewer({
   const modalFetchDoneRef = useRef(false)
   const deletedAttachmentsRef = useRef(new Set())
   const alertedFieldsRef = useRef(new Set())
+  // Timestamp of last user interaction (pointer/keyboard) to detect user-initiated edits
+  const lastUserActionRef = useRef(0)
+  const attachmentLoadLockRef = useRef(false)
   const readOnlyAttemptsRef = useRef(0)
   const pendingSanctionValuesRef = useRef(null)
   const applySanctionAttemptsRef = useRef(0)
   // NEW: dedicated input for custom-stamp flow (adds without touching existing flows)
   const stampFileInputRef = useRef(null)
-
+  const [signRequested, setSignRequested] = useState(false);
   if (typeof window !== 'undefined') {
     window.currentAction = window.currentAction || ''
   }
@@ -59,6 +83,8 @@ export default function PdfViewer({
   const [modalSrc, setModalSrc] = useState(null)
   const [finishEnabled, setFinishEnabled] = useState(false)
   const [signRequestEnabled, setSignRequestEnabled] = useState(false)
+  const canEnableSign =
+    loanStatus === LoanStatus.APPROVED && sanctionMode;
   const [modalLoading, setModalLoading] = useState(false)
   const [modalLoadError, setModalLoadError] = useState(false)
   const [isAttachmentViewing, setIsAttachmentViewing] = useState(false)
@@ -70,135 +96,154 @@ export default function PdfViewer({
   const infoBtnRef = useRef(null)
   const approvalBtnRef = useRef(null)
 
+  // Fields that must never be set read-only (attachment placeholders)
+  const ATTACHMENT_FIELD_NAMES = useMemo(() => new Set([
+    'aadharattach', 'panattach', 'panatatch', 'salaryattach', 'bankattach', 'drivingattach', 'passportattach'
+  ]), [])
+
   // Loan Officer dropdown menus for Info Required / Approval choices
   const [showInfoMenu, setShowInfoMenu] = useState(false)
   const [showApprovalMenu, setShowApprovalMenu] = useState(false)
 
+  // Track recent user interactions so we can tell if a change event was user-initiated
+  useEffect(() => {
+    const touch = () => { try { lastUserActionRef.current = Date.now() } catch (e) { } }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pointerdown', touch, true)
+      window.addEventListener('keydown', touch, true)
+    }
+    return () => {
+      try {
+        window.removeEventListener('pointerdown', touch, true)
+        window.removeEventListener('keydown', touch, true)
+      } catch (e) { }
+    }
+  }, [])
+
 
   const canSubmit = showBtn
 
-  const API_BASE = useMemo(() => process.env.REACT_APP_API_URL || 'http://localhost:5063', [])
-
+  // const API_BASE = useMemo(() => 'http://localhost:5063', [])
+  const API_BASE = useMemo(() => "https://livedocumentsdkapp.azurewebsites.net/web-services/loan-processing/api/loan-processing-service", [])
   // Build a prioritized list of candidate URLs for an attachment.
- const getAttachmentCandidates = useCallback((parentFilename, attachmentName) => {
-  const list = [];
-  try {
-    const pf = (parentFilename || '').toString();
-    const an = (attachmentName || '').toString();
-    if (!an) return list;
-    const enc = s => encodeURIComponent((s || '').toString());
-    const ensurePdf = s => (s && s.toLowerCase().endsWith('.pdf')) ? s : `${s}.pdf`;
-    if (pf) list.push(`${API_BASE}/api/Authentication/GetPdfAttachmentFile/${enc(ensurePdf(pf))}/${enc(ensurePdf(an))}`);
-    if (pf) list.push(`${API_BASE}/api/Authentication/GetPdfAttachmentFile/${enc(pf)}/${enc(an)}`);
-    // if (an) list.push(`${API_BASE}/api/Authentication/GetPdfAttachmentFile?fileName=${enc(an)}&parent=${enc(pf)}`);
-  } catch (e) {}
-  return Array.from(new Set(list));
-}, [API_BASE]);
+  const getAttachmentCandidates = useCallback((parentFilename, attachmentName) => {
+    const list = [];
+    try {
+      const pf = (parentFilename || '').toString();
+      const an = (attachmentName || '').toString();
+      if (!an) return list;
+      const enc = s => encodeURIComponent((s || '').toString());
+      const ensurePdf = s => (s && s.toLowerCase().endsWith('.pdf')) ? s : `${s}.pdf`;
+      if (pf) list.push(`${API_BASE}/api/Authentication/GetPdfAttachmentFile/${enc(ensurePdf(pf))}/${enc(ensurePdf(an))}`);
+      if (pf) list.push(`${API_BASE}/api/Authentication/GetPdfAttachmentFile/${enc(pf)}/${enc(an)}`);
+      // if (an) list.push(`${API_BASE}/api/Authentication/GetPdfAttachmentFile?fileName=${enc(an)}&parent=${enc(pf)}`);
+    } catch (e) { }
+    return Array.from(new Set(list));
+  }, [API_BASE]);
 
   // --- Helper: filter candidate URLs to keep same-origin as API_BASE (to avoid 404s from the wrong backend) ---
-const getOrigin = (url) => { try { return new URL(url).origin } catch { return null } }
+  const getOrigin = (url) => { try { return new URL(url).origin } catch { return null } }
 
-const filterCandidatesToApiBaseOrigin = (cands) => {
-  try {
-    const baseOrigin = getOrigin(API_BASE)
-    if (!Array.isArray(cands) || !baseOrigin) return cands
-    const filtered = cands.filter(u => {
-      try { return getOrigin(u) === baseOrigin } catch { return true }
-    })
-    return (filtered && filtered.length)
-      ? Array.from(new Set(filtered))
-      : Array.from(new Set(cands))
-  } catch { return cands }
-}
-// Returns true when an element is in the DOM and visible enough for layout
-function isDomVisible(el) {
-  if (!el) return false;
-  // not attached?
-  if (!document.body.contains(el)) return false;
-  // hidden via display:none?
-  const style = window.getComputedStyle(el);
-  if (style.display === 'none' || style.visibility === 'hidden') return false;
-  // width/height available?
-  const rect = el.getBoundingClientRect?.();
-  return !!rect && rect.width > 0 && rect.height > 0;
-}
-
-// Wait until a viewer element is attached & visible before calling viewer.load
-async function waitUntilVisible(viewer, { timeout = 3000, interval = 50 } = {}) {
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      try {
-        // Normalize to underlying ej2/pdf viewer instance when possible
-        const inst = (viewer && (viewer.ej2Instances || viewer.pdfViewer)) || viewer || null;
-        // Syncfusion instance exposes `element`; fallback to container id
-        const el = inst?.element || viewer?.element || document.getElementById('container');
-
-        if (isDomVisible(el)) {
-          // Optionally ensure the page container exists to avoid internal layout calls
-          const hasPage = Boolean(el && (el.querySelector('.e-pv-page') || el.querySelector('.e-pv-page-container')));
-          // Also accept instances that already report pageCount > 0
-          const pageCount = (inst && (inst.pageCount || inst.pdfViewer && inst.pdfViewer.pageCount)) || 0;
-          if (hasPage || pageCount > 0) return resolve(true);
-          // If visible but no page yet, still resolve (some viewers create pages on load)
-          return resolve(true);
-        }
-      } catch (err) {
-        // ignore and retry
-      }
-      if (Date.now() - start > timeout) return reject(new Error('viewer not visible'));
-      setTimeout(tick, interval);
-    };
-    tick();
-  });
-}
-
-// Safe load wrapper to prevent getBoundingClientRect crashes
-async function safeViewerLoad(viewer, src) {
-  if (!viewer || !src) return;
-  // Normalize to underlying ej2/pdf viewer instance when possible
-  const inst = (viewer.ej2Instances || viewer.pdfViewer) || viewer;
-  // Give React a frame to mount the node
-  await new Promise(r => requestAnimationFrame(r));
-  await waitUntilVisible(inst).catch(() => {/* best effort; continue */});
-  // Now load using the underlying instance
-  try {
-    if (inst && typeof inst.load === 'function') {
-      inst.load(src, null);
-    } else if (inst && typeof inst.open === 'function') {
-      inst.open(src);
-    } else if (viewer && typeof viewer.load === 'function') {
-      // fallback to whatever was provided
-      viewer.load(src, null);
-    }
-  } catch (e) {
-    console.warn('safeViewerLoad: load/open threw', e);
+  const filterCandidatesToApiBaseOrigin = (cands) => {
+    try {
+      const baseOrigin = getOrigin(API_BASE)
+      if (!Array.isArray(cands) || !baseOrigin) return cands
+      const filtered = cands.filter(u => {
+        try { return getOrigin(u) === baseOrigin } catch { return true }
+      })
+      return (filtered && filtered.length)
+        ? Array.from(new Set(filtered))
+        : Array.from(new Set(cands))
+    } catch { return cands }
   }
-  // Ask Syncfusion to re-measure after load
-  try { if (inst && typeof inst.resize === 'function') inst.resize(); else if (viewer && typeof viewer.resize === 'function') viewer.resize(); } catch {}
-  // Defensive: patch common internal methods to prevent uncaught errors from library
-  try {
-    const target = inst || viewer
-    const base = target.pdfViewerBase || target.base || target
-    if (base && !base.__patchedForApp) {
-      base.__patchedForApp = true
-      const wrap = (obj, name) => {
+  // Returns true when an element is in the DOM and visible enough for layout
+  function isDomVisible(el) {
+    if (!el) return false;
+    // not attached?
+    if (!document.body.contains(el)) return false;
+    // hidden via display:none?
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    // width/height available?
+    const rect = el.getBoundingClientRect?.();
+    return !!rect && rect.width > 0 && rect.height > 0;
+  }
+
+  // Wait until a viewer element is attached & visible before calling viewer.load
+  async function waitUntilVisible(viewer, { timeout = 3000, interval = 50 } = {}) {
+    const start = Date.now();
+    return new Promise((resolve, reject) => {
+      const tick = () => {
         try {
-          if (!obj || typeof obj[name] !== 'function') return
-          const orig = obj[name]
-          obj[name] = function(...args) {
-            try { return orig.apply(this, args) } catch (e) { console.warn(`[PdfViewer patch] suppressed error in ${name}:`, e); }
+          // Normalize to underlying ej2/pdf viewer instance when possible
+          const inst = (viewer && (viewer.ej2Instances || viewer.pdfViewer)) || viewer || null;
+          // Syncfusion instance exposes `element`; fallback to container id
+          const el = inst?.element || viewer?.element || document.getElementById('container');
+
+          if (isDomVisible(el)) {
+            // Optionally ensure the page container exists to avoid internal layout calls
+            const hasPage = Boolean(el && (el.querySelector('.e-pv-page') || el.querySelector('.e-pv-page-container')));
+            // Also accept instances that already report pageCount > 0
+            const pageCount = (inst && (inst.pageCount || inst.pdfViewer && inst.pdfViewer.pageCount)) || 0;
+            if (hasPage || pageCount > 0) return resolve(true);
+            // If visible but no page yet, still resolve (some viewers create pages on load)
+            return resolve(true);
           }
-        } catch (e) {}
+        } catch (err) {
+          // ignore and retry
+        }
+        if (Date.now() - start > timeout) return reject(new Error('viewer not visible'));
+        setTimeout(tick, interval);
+      };
+      tick();
+    });
+  }
+
+  // Safe load wrapper to prevent getBoundingClientRect crashes
+  async function safeViewerLoad(viewer, src) {
+    if (!viewer || !src) return;
+    // Normalize to underlying ej2/pdf viewer instance when possible
+    const inst = (viewer.ej2Instances || viewer.pdfViewer) || viewer;
+    // Give React a frame to mount the node
+    await new Promise(r => requestAnimationFrame(r));
+    await waitUntilVisible(inst).catch(() => {/* best effort; continue */ });
+    // Now load using the underlying instance
+    try {
+      if (inst && typeof inst.load === 'function') {
+        inst.load(src, null);
+      } else if (inst && typeof inst.open === 'function') {
+        inst.open(src);
+      } else if (viewer && typeof viewer.load === 'function') {
+        // fallback to whatever was provided
+        viewer.load(src, null);
       }
-      wrap(base, 'updateLeftPosition')
-      wrap(base, 'renderPageContainer')
-      wrap(base, 'initPageDiv')
-      wrap(base, 'pageRender')
-      wrap(base, 'requestSuccessPdfium')
+    } catch (e) {
     }
-  } catch (e) { /* swallow */ }
-}
+    // Ask Syncfusion to re-measure after load
+    try { if (inst && typeof inst.resize === 'function') inst.resize(); else if (viewer && typeof viewer.resize === 'function') viewer.resize(); } catch { }
+    // Defensive: patch common internal methods to prevent uncaught errors from library
+    try {
+      const target = inst || viewer
+      const base = target.pdfViewerBase || target.base || target
+      if (base && !base.__patchedForApp) {
+        base.__patchedForApp = true
+        const wrap = (obj, name) => {
+          try {
+            if (!obj || typeof obj[name] !== 'function') return
+            const orig = obj[name]
+            obj[name] = function (...args) {
+              try { return orig.apply(this, args) } catch (e) { }
+            }
+          } catch (e) { }
+        }
+        wrap(base, 'updateLeftPosition')
+        wrap(base, 'renderPageContainer')
+        wrap(base, 'initPageDiv')
+        wrap(base, 'pageRender')
+        wrap(base, 'requestSuccessPdfium')
+      }
+    } catch (e) { /* swallow */ }
+  }
 
 
 
@@ -214,14 +259,13 @@ async function safeViewerLoad(viewer, src) {
         if (!blob) continue
         // revoke previous object URL if present
         if (lastObjectUrlRef.current) {
-          try { URL.revokeObjectURL(lastObjectUrlRef.current) } catch (e) {}
+          try { URL.revokeObjectURL(lastObjectUrlRef.current) } catch (e) { }
           lastObjectUrlRef.current = null
         }
         const blobUrl = URL.createObjectURL(blob)
         lastObjectUrlRef.current = blobUrl
         return { blobUrl, url, blob }
       } catch (err) {
-        // console.warn('fetch candidate failed', url, err)
         continue
       }
     }
@@ -234,7 +278,7 @@ async function safeViewerLoad(viewer, src) {
   }, [])
 
   useEffect(() => {
-    try { console.debug && console.log('[PdfViewer] mount role prop:', role, 'storedUserRole:', storedUserRole) } catch (e) {}
+    try { (storedUserRole) } catch (e) { }
   }, [role, storedUserRole])
 
   const isSiteOfficer = useMemo(() => {
@@ -265,7 +309,7 @@ async function safeViewerLoad(viewer, src) {
   // key prototype methods to suppress intermittent getBoundingClientRect errors.
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const names = ['updateLeftPosition', 'renderPageContainer', 'initPageDiv', 'pageRender', 'requestSuccessPdfium']
+    const names = ['updateLeftPosition', 'renderPageContainer', 'initPageDiv', 'pageRender', 'requestSuccessPdfium', 'createNotificationPopup', 'openNotificationPopup', 'createAjaxRequest', 'onControlError']
 
     const doPatch = () => {
       try {
@@ -277,13 +321,13 @@ async function safeViewerLoad(viewer, src) {
           try {
             if (typeof proto[name] !== 'function') return
             const orig = proto[name]
-            proto[name] = function(...args) {
+            proto[name] = function (...args) {
               try { return orig.apply(this, args) } catch (e) {
-                try { console.warn(`[PdfViewer global patch] suppressed ${name}:`, e) } catch (e2) {}
+                try { } catch (e2) { }
                 return undefined
               }
             }
-          } catch (e) {}
+          } catch (e) { }
         })
 
         // Also defensively patch some Syncfusion form/signature prototypes which
@@ -294,14 +338,14 @@ async function safeViewerLoad(viewer, src) {
               if (!obj || typeof obj[methodName] !== 'function') return
               if (obj[methodName].__patchedForApp) return
               const orig = obj[methodName]
-              obj[methodName] = function(...args) {
+              obj[methodName] = function (...args) {
                 try { return orig.apply(this, args) } catch (e) {
-                  try { console.warn(`[PdfViewer form patch] suppressed ${methodName}:`, e) } catch (e2) {}
+                  try { } catch (e2) { }
                   return fallbackReturn
                 }
               }
               obj[methodName].__patchedForApp = true
-            } catch (e) {}
+            } catch (e) { }
           }
 
           // FormDesigner.getTextboxValue -> return empty string on failure
@@ -313,7 +357,7 @@ async function safeViewerLoad(viewer, src) {
             patchProtoMethod(window.Signature.prototype, 'addSignature', undefined)
             patchProtoMethod(window.Signature.prototype, 'addSignatureInPage', undefined)
           }
-        } catch (e) {}
+        } catch (e) { }
 
         return true
       } catch (e) { return false }
@@ -326,10 +370,49 @@ async function safeViewerLoad(viewer, src) {
         clearInterval(interval)
         clearTimeout(timeout)
       }
-    }, 250)
-    const timeout = setTimeout(() => { clearInterval(interval) }, 10000)
+    }, 500)
+    const timeout = setTimeout(() => { clearInterval(interval) }, 30000)
     return () => { clearInterval(interval); clearTimeout(timeout) }
   }, [])
+
+  // Ensure the Syncfusion PdfViewerBase prototype is patched on demand.
+  // Some login/logout/re-mount flows create new viewer instances whose
+  // prototypes may not yet be patched by the global effect above. Call
+  // `ensurePdfViewerPatched()` before triggering viewer loads that can
+  // surface internal library DOM errors.
+  const ensurePdfViewerPatched = async ({ timeout = 10000, interval = 250 } = {}) => {
+    if (typeof window === 'undefined') return
+    const start = Date.now()
+    const tryPatch = () => {
+      try {
+        const proto = window.PdfViewerBase && window.PdfViewerBase.prototype
+        if (!proto) return false
+        if (proto.__patchedForApp) return true
+        proto.__patchedForApp = true
+        const names = ['updateLeftPosition', 'renderPageContainer', 'initPageDiv', 'pageRender', 'requestSuccessPdfium', 'createNotificationPopup', 'openNotificationPopup', 'createAjaxRequest', 'onControlError']
+        names.forEach(name => {
+          try {
+            if (typeof proto[name] !== 'function') return
+            const orig = proto[name]
+            proto[name] = function (...args) {
+              try { return orig.apply(this, args) } catch (e) { try { } catch (e2) { } return undefined }
+            }
+          } catch (e) { }
+        })
+        return true
+      } catch (e) { return false }
+    }
+
+    if (tryPatch()) return true
+    // poll until patched or timeout
+    while (Date.now() - start < timeout) {
+      await new Promise(r => setTimeout(r, interval))
+      try {
+        if (tryPatch()) return true
+      } catch (e) { }
+    }
+    return false
+  }
 
   const allGroups = useMemo(() => [
     'OpenOption',
@@ -412,20 +495,20 @@ async function safeViewerLoad(viewer, src) {
   const inferSanctionFieldType = (rawName) => {
     const n = (rawName || '').toString()
     if (!n) return null
-    
+
     // Normalize for comparison (remove spaces, underscores, parens, hyphens, make lowercase)
     const normalized = n.toLowerCase().replace(/[_\s()\-]/g, '')
-    
+
     // If this looks like a signature field, do not treat it as a name target
     if (/(\bsign|signature|signed|_sig|\bsig\b)/.test(normalized)) return null
-    
+
     // EXACT match for sanction form field names (case-insensitive)
     const lowerName = n.toLowerCase()
     if (lowerName === 'applicantname') return 'name'
     if (lowerName === 'amount') return 'amount'
     if (lowerName === 'tenure') return 'tenure'
     if (lowerName === 'date') return 'date'
-    
+
     // Fallback: Match name fields from loan application: "Full Name", "Customer Name", "name", "aname", etc.
     if (/(applicant|customer|full.*name|aname|^name$)/.test(normalized)) return 'name'
     // Match amount fields: "Sanctioned Amount", "Loan Amount", "Amount", etc.
@@ -459,7 +542,6 @@ async function safeViewerLoad(viewer, src) {
         return [...(prev || []), fileInfo]
       })
     } catch (err) {
-      console.error('Error reading attachment', err)
       alert('Failed to read attachment')
     }
   }, [fileToBase64])
@@ -470,19 +552,38 @@ async function safeViewerLoad(viewer, src) {
   }, [])
 
   const handleFileChange = useCallback(async (event) => {
-    const file = event.target.files && event.target.files[0]
-    if (file) {
-      const allowedTypes = ['application/pdf']
-      const fileExtension = file.name.split('.').pop().toLowerCase()
-      const allowedExtensions = ['pdf']
-      if (allowedTypes.includes(file.type) || allowedExtensions.includes(fileExtension)) {
-        await handleAttach(file)
-      } else {
-        alert('Invalid file type. Please select a PDF')
-      }
+    const file = event.target.files && event.target.files[0];
+
+    if (!file) return;
+
+    const fileName = file.name || '';
+    const extension = fileName.split('.').pop().toLowerCase();
+
+    // ✅ PRIMARY CHECK (STRICT)
+    if (extension !== 'pdf') {
+      alert('Only PDF files are allowed');
+
+      // ✅ IMPORTANT: clear input
+      event.target.value = '';
+
+      return; // ❗ MUST stop here
     }
-    if (event && event.target) event.target.value = ''
-  }, [handleAttach])
+
+    // ✅ EXTRA SAFETY
+    if (file.type && file.type !== 'application/pdf') {
+      alert('Invalid file type. Please upload a valid PDF');
+
+      event.target.value = '';
+      return;
+    }
+
+    // ✅ ONLY VALID FILE REACHES HERE
+    await handleAttach(file);
+
+    event.target.value = ''; // reset
+
+  }, [handleAttach]);
+
 
   // ---------- Submit / Save ----------
   function getDocumentId(pdfFileName, fileId) {
@@ -492,6 +593,45 @@ async function safeViewerLoad(viewer, src) {
     if (m && m[1]) return String(m[1])
     return String(fileId)
   }
+  const getCommentByStatus = (status, role) => {
+    switch (status) {
+      case LoanStatus.NEW:
+        return 'A new loan application has been created — awaiting Loan Officer review';
+
+      case LoanStatus.UNDER_REVIEW:
+        return 'Loan application is under review by Loan Officer';
+
+      case LoanStatus.INFO_REQUIRED:
+        return 'Additional information requested by Loan Officer — awaiting Loan Requestor update';
+
+      case LoanStatus.INFO_UPDATED:
+        return 'Information updated by Loan Requestor';
+
+      case LoanStatus.VALIDATING:
+        return 'Loan application sent for site verification — awaiting Site Officer review';
+
+      case LoanStatus.SITE_VERIFIED:
+        return 'Site verification completed by Site Officer — awaiting Loan Officer review';
+
+      case LoanStatus.PENDING_APPROVAL:
+        return 'Awaiting approval from Manager';
+
+      case LoanStatus.SIGN_REQUIRED:
+        return (role === 'Manager' || role === 'Loan Officer')
+          ? 'Signature requested from Loan Requestor'
+          : 'Signed by Loan Requestor';
+
+      case LoanStatus.APPROVED:
+        return 'Loan application approved — process completed';
+
+      case LoanStatus.REJECTED:
+        return 'Loan application rejected — process closed';
+
+      default:
+        return '';
+    }
+  };
+
 
   const handleSubmit = async (overrideStatus) => {
     // Determine role characteristics early to avoid accidentally overwriting site-officer flow
@@ -509,7 +649,7 @@ async function safeViewerLoad(viewer, src) {
       else if (loanStatus === LoanStatus.SIGN_REQUIRED) computedAction = LoanStatus.PENDING_APPROVAL
       else computedAction = LoanStatus.NEW
     }
-    try { console.debug('[PdfViewer] handleSubmit computedAction', { loanStatus, computedAction, role }) } catch (e) {}
+    try { } catch (e) { }
 
     const viewer = viewerRef.current
     if (!viewer) return
@@ -540,7 +680,7 @@ async function safeViewerLoad(viewer, src) {
       // 3) the explicit `loanStatus` prop
       // 4) global `window.currentAction` fallback
       let status = overrideStatus || computedAction || loanStatus || ((typeof window !== 'undefined' && window.currentAction) ? window.currentAction : LoanStatus.NEW)
-      
+
       // If we're in the special case where loanStatus was SIGN_REQUIRED (manager requested sign)
       // and the applicant is submitting now, ensure we mark it Pending Approval.
       // Only apply this automatic promotion when caller didn't explicitly pass an override.
@@ -549,19 +689,15 @@ async function safeViewerLoad(viewer, src) {
       // }
 
       const attachmentsPayload = (uploadedFiles || []).map(f => ({ name: f.name, base64: f.base64, type: f.type, originalName: f.originalName }))
-
-      console.debug('[PdfViewer] handleSubmit: saving', { overrideStatus, computedAction, loanStatus, windowAction: (typeof window !== 'undefined' && window.currentAction) ? window.currentAction : null, status, fileName })
-
+      const commentText = getCommentByStatus(status, role);
       const resp = await fetch(`${base}/api/Authentication/SaveFilledForms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64, fileName, username, status, documentId, customerName, attachments: attachmentsPayload })
+        body: JSON.stringify({ base64, fileName, username, status, documentId, customerName, attachments: attachmentsPayload, comments: commentText })
       })
-      if (!resp.ok) console.error('SaveFilledForms failed', resp.status)
-
       let savedName = fileName
       let json
-      try { json = await resp.json(); if (json && json.fileName) savedName = json.fileName } catch {}
+      try { json = await resp.json(); if (json && json.fileName) savedName = json.fileName } catch { }
 
       const docId = documentId || (savedName && (savedName.match(/(\d+)(?=\.pdf$)/) || [])[0]) || null
 
@@ -591,7 +727,7 @@ async function safeViewerLoad(viewer, src) {
           persistAttachments(uploadedFiles || [], docId)
           setUploadedFiles([])
         }
-      } catch (e) { console.warn('Error processing attachments after save', e) }
+      } catch (e) { }
 
       // Incrementing the parent's file count is handled once below
       // (avoid double-increment which created duplicate rows).
@@ -603,11 +739,11 @@ async function safeViewerLoad(viewer, src) {
       // status update is persisted, causing the old status to re-appear.
 
       const incrementForForm = 1
-      
-if (pdfFileName === 'Loan_Application_Form' &&
-    ((overrideStatus || computedAction || loanStatus || LoanStatus.NEW) === LoanStatus.NEW) &&
-    (!loanId || String(loanId).trim() === '')
-) setFileCount(count + 1)
+
+      if (pdfFileName === 'Loan_Application_Form' &&
+        ((overrideStatus || computedAction || loanStatus || LoanStatus.NEW) === LoanStatus.NEW) &&
+        (!loanId || String(loanId).trim() === '')
+      ) setFileCount(count + 1)
 
       setViewerMode(false)
       setSanctionMode(false)
@@ -623,7 +759,7 @@ if (pdfFileName === 'Loan_Application_Form' &&
       } else if (isSiteOfficer && loanStatus === LoanStatus.VALIDATING) {
         setLoanStatus(LoanStatus.SITE_VERIFIED)
       }
-      try { if (typeof window !== 'undefined') window.currentAction = current || '' } catch (e) {}
+      try { if (typeof window !== 'undefined') window.currentAction = current || '' } catch (e) { }
       // Inform the rest of the app that a file changed — do this after we've
       // updated `loanStatus` so the dashboard's re-fetch sees the new status.
       try {
@@ -632,33 +768,32 @@ if (pdfFileName === 'Loan_Application_Form' &&
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('userFilesChanged', { detail: { documentId: docId, fileName: savedName, username } }))
         }
-      } catch {}
+      } catch { }
       try {
         const user = JSON.parse(localStorage.getItem('user') || 'null')
         const username = user?.username || user?.name || null
         const current = status
         if (current === LoanStatus.NEW) {
-          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: 'A new loan application has been created.' } })) } catch (e) {}
+          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: 'A new loan application has been created.' } })) } catch (e) { }
         } else if (current === LoanStatus.SITE_VERIFIED) {
-          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: 'Site verified — awaiting Loan Officer decision' } })) } catch (e) {}
+          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: 'Site verification completed by Site Officer — awaiting Loan Officer review' } })) } catch (e) { }
         } else if (current === LoanStatus.INFO_UPDATED) {
           // Applicant updated information after Info Required
           const commentText = 'Information updated by Loan Requestor'
-          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: commentText } })) } catch (e) {}
+          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: commentText } })) } catch (e) { }
         } else if (current === LoanStatus.SIGN_REQUIRED) {
           // Signature flow: manager requests sign OR applicant completed signing
           const commentText = (role === 'Manager' || role === 'Loan Officer')
             ? 'Signature requested from Loan Requestor'
             : 'Signed by Loan Requestor'
-          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: commentText } })) } catch (e) {}
+          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: commentText } })) } catch (e) { }
         } else if (current === LoanStatus.PENDING_APPROVAL) {
-          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: 'Pending approval by Manager' } })) } catch (e) {}
+          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: 'Awaiting approval from Manager' } })) } catch (e) { }
         } else if (current === LoanStatus.APPROVED) {
-          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: 'Loan application has been approved' } })) } catch (e) {}
+          try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: savedName, username, comments: 'Loan application approved — process completed' } })) } catch (e) { }
         }
-      } catch (e) {}
+      } catch (e) { }
     } catch (err) {
-      console.error('Error saving filled form', err)
     }
   }
 
@@ -669,12 +804,12 @@ if (pdfFileName === 'Loan_Application_Form' &&
       await handleSubmit(LoanStatus.REJECTED)
       try {
         const docId = loanId || getDocumentId(pdfFileName, count)
-        const user = JSON.parse(localStorage.getItem('user')||'null')
+        const user = JSON.parse(localStorage.getItem('user') || 'null')
         const username = user?.username || user?.name || null
-        try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: pdfFileName, username, comments: 'Application Rejected' } })) } catch (e) {}
-      } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: pdfFileName, username, comments: 'Loan application rejected — process closed' } })) } catch (e) { }
+      } catch (e) { }
       setViewerMode(false)
-    } catch (e) { console.error('handleReject error', e) }
+    } catch (e) { }
   }
 
   const handleApproval = async () => {
@@ -688,47 +823,35 @@ if (pdfFileName === 'Loan_Application_Form' &&
     const values = { name: '', amount: '', tenure: '', date: '' }
     try {
       const forms = viewer.retrieveFormFields() || []
-      console.debug('[PdfViewer] handleApproval: capturing from', forms.length, 'form fields')
-      
       for (let i = 0; i < forms.length; i++) {
         try {
           const fn = (forms[i].name || forms[i].fieldName || forms[i].id || '').toString()
           const val = (forms[i].value || forms[i].Value || '').toString().trim()
           const t = inferSanctionFieldType(fn)
-          
-          console.debug('[PdfViewer] handleApproval: field', i, ':', { name: fn, value: val, type: t })
-          
           if (!t) continue
           if (!val) continue
           if (t === 'name' && !values.name) values.name = val
           else if (t === 'amount' && !values.amount) values.amount = val
           else if (t === 'tenure' && !values.tenure) values.tenure = val
           else if (t === 'date' && !values.date) values.date = val
-        } catch (inner) { console.warn('Error processing field', i, inner) }
+        } catch (inner) { }
       }
-      
-      console.debug('[PdfViewer] handleApproval: captured values:', values)
-    } catch (e) { console.warn('Failed to read form fields before merge', e) }
-    
+    } catch (e) { }
+
     // Store values in both state and ref BEFORE calling merge API
     setSanctionValues(values)
     pendingSanctionValuesRef.current = values
 
     // Defer changing status until merge succeeds (see below)
-
-    console.debug('[PdfViewer] handleApproval: start, capturing sanction values', values)
-    console.debug('[PdfViewer] handleApproval: calling MergeSanction API with file:', pdfFileName)
     // Request server to merge the application + sanction template into one PDF
     try {
       // disable sign request until merged document fully loads
-      try { setSignRequestEnabled(false) } catch {}
+      try { setSignRequestEnabled(true); } catch { }
       const base = API_BASE
       // Ensure filenames include .pdf and explicitly send both application and sanction names
       const applicationFile = (pdfFileName && pdfFileName.toString().toLowerCase().endsWith('.pdf')) ? pdfFileName : `${pdfFileName}.pdf`
       const sanctionFile = 'Sanction_Letter.pdf'
-      
-      console.debug('[PdfViewer] handleApproval: about to call MergeSanction', { applicationFile, sanctionFile, values })
-      
+
       // include captured sanction values so server can render them into the merged document
       const resp = await fetch(`${base}/api/Authentication/MergeSanction`, {
         method: 'POST',
@@ -736,92 +859,106 @@ if (pdfFileName === 'Loan_Application_Form' &&
         body: JSON.stringify({ FileName: applicationFile, SanctionFileName: sanctionFile, SanctionValues: values })
       })
 
-      console.debug('[PdfViewer] handleApproval: MergeSanction response', resp.status, resp.ok)
-
       let json = null
-      try { json = await resp.json(); console.debug('[PdfViewer] handleApproval: MergeSanction JSON', json) } catch (e) { console.warn('Failed to parse merge response', e) }
+      try { json = await resp.json(); } catch (e) { }
 
       const mergedName = json && (json.fileName || json.file) ? (json.fileName || json.file) : null
       if (resp.ok && mergedName) {
-        console.debug('[PdfViewer] handleApproval: merge successful, merged file name:', mergedName)
         // normalize merged name to include .pdf
         const mergedFilename = (mergedName && mergedName.toString().toLowerCase().endsWith('.pdf')) ? mergedName : `${mergedName}.pdf`
         // pending values already set above, so resourcesLoaded will apply them
-        try { if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED } catch {}
-        try { setLoanStatus(LoanStatus.APPROVED) } catch {}
-        try { setPdfFileName(mergedFilename) } catch {}
-        try { setSanctionMode(true) } catch {}
-        try { setViewerMode(true) } catch (e) {}
+        try { if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED } catch { }
+        try { setLoanStatus(LoanStatus.APPROVED) } catch { }
+        try { setPdfFileName(mergedFilename) } catch { }
+        try { setSanctionMode(true) } catch { }
+        try { setViewerMode(true) } catch (e) { }
+        setSignRequestEnabled(true);
         // Attempt to trigger loading of the freshly-merged document immediately
         try {
           setTimeout(() => {
-            try { console.debug('[PdfViewer] handleApproval: loading merged PDF', mergedFilename); resourcesLoaded(mergedFilename) } catch (e) { console.warn('resourcesLoaded call failed', e) }
+            try { resourcesLoaded(mergedFilename) } catch (e) { }
           }, 120)
-        } catch (e) {}
+        } catch (e) { }
         // values will be applied when resourcesLoaded completes (pendingSanctionValuesRef)
         return
       } else {
-        console.warn('[PdfViewer] handleApproval: merge failed or no merged name returned', { ok: resp.ok, mergedName, json })
       }
 
       // Fallback: if merge failed, load the standard sanction template
       // fallback: pending values already set above, load standard sanction template; values will be applied after load
-      console.warn('[PdfViewer] handleApproval: using fallback - loading plain Sanction_Letter.pdf')
-      try { if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED } catch {}
-      try { setLoanStatus(LoanStatus.APPROVED) } catch (e) {}
-      try { setSanctionMode(true); setPdfFileName('Sanction_Letter.pdf'); setViewerMode(true) } catch (e) {}
+      try { if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED } catch { }
+      try { setLoanStatus(LoanStatus.APPROVED) } catch (e) { }
+      try {
+        setSanctionMode(true); setSignRequestEnabled(true); // ✅ FIX
+        setPdfFileName('Sanction_Letter.pdf'); setViewerMode(true)
+      } catch (e) { }
       try {
         setTimeout(() => {
-          try { console.debug('[PdfViewer] handleApproval: loading fallback Sanction_Letter.pdf'); resourcesLoaded('Sanction_Letter.pdf') } catch (e) { console.warn('resourcesLoaded call failed (fallback)', e) }
+          try { resourcesLoaded('Sanction_Letter.pdf') } catch (e) { }
         }, 120)
-      } catch (e) {}
+      } catch (e) { }
     } catch (err) {
-      console.error('[PdfViewer] handleApproval: MergeSanction exception', err)
       // fallback: pending values already set above
-      try { if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED } catch {}
-      try { setLoanStatus(LoanStatus.APPROVED) } catch (e) {}
-      try { setSanctionMode(true); setPdfFileName('Sanction_Letter.pdf'); setViewerMode(true) } catch (e) {}
+      try { if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED } catch { }
+      try { setLoanStatus(LoanStatus.APPROVED) } catch (e) { }
+      try {
+        setSanctionMode(true); setSignRequestEnabled(true); // ✅ FIX
+        setPdfFileName('Sanction_Letter.pdf'); setViewerMode(true)
+      } catch (e) { }
       try {
         setTimeout(() => {
-          try { console.debug('[PdfViewer] handleApproval: loading fallback (merge error) Sanction_Letter.pdf'); resourcesLoaded('Sanction_Letter.pdf') } catch (e) { console.warn('resourcesLoaded call failed (error fallback)', e) }
+          try { resourcesLoaded('Sanction_Letter.pdf') } catch (e) { }
         }, 120)
-      } catch (e) {}
+      } catch (e) { }
     }
   }
 
   // Loading of merged/sanction documents is handled explicitly by `handleApproval`
   // and the `resourcesLoaded` callback; avoid triggering loads from this effect
-  useEffect(() => {}, [loanStatus, sanctionValues, sanctionMode])
+  useEffect(() => { }, [loanStatus, sanctionValues, sanctionMode])
 
   const handleSignRequest = async () => {
     try {
-      if (typeof window !== 'undefined') window.currentAction = LoanStatus.SIGN_REQUIRED
-      setLoanStatus(LoanStatus.SIGN_REQUIRED)
-      // Explicitly pass the SIGN_REQUIRED status to avoid racing with setState
-      await handleSubmit(LoanStatus.SIGN_REQUIRED)
+
+      // ✅ Allow click after approval
+      if (signRequested && loanStatus === LoanStatus.SIGN_REQUIRED) return;
+
+      setSignRequested(true);
+
+      if (typeof window !== 'undefined')
+        window.currentAction = LoanStatus.SIGN_REQUIRED;
+
+      setLoanStatus(LoanStatus.SIGN_REQUIRED);
+
+      await handleSubmit(LoanStatus.SIGN_REQUIRED);
+
     } catch (e) {
-      console.warn('handleSignRequest error', e)
-    } finally {
-      setSanctionMode(false)
+      setSignRequested(false);
     }
-  }
+  };
+
 
   const handleFinish = async () => {
     try {
       const v = viewerRef.current; if (!v) return
       const forms = v.retrieveFormFields() || []
+      // Ensure attachment placeholders remain editable even when finishing
+      const alwaysEditable = new Set(['aadharattach', 'panattach', 'panatatch', 'salaryattach', 'bankattach', 'drivingattach', 'passportattach'])
       for (let i = 0; i < forms.length; i++) {
-        try { v.formDesignerModule.updateFormField(forms[i], { isReadOnly: true }) } catch (e) {}
+        try {
+          const f = forms[i]
+          const nm = ((f.name || f.fieldName || '') + '').toString().toLowerCase()
+          const makeReadOnly = !alwaysEditable.has(nm)
+          try { v.formDesignerModule.updateFormField(f, { isReadOnly: makeReadOnly }) } catch (e) { }
+        } catch (e) { }
       }
-      try { if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED } catch (e) {}
-      try { setLoanStatus(LoanStatus.APPROVED) } catch (e) {}
-      console.debug('[PdfViewer] handleFinish: submitting APPROVED')
+      try { if (typeof window !== 'undefined') window.currentAction = LoanStatus.APPROVED } catch (e) { }
+      try { setLoanStatus(LoanStatus.APPROVED) } catch (e) { }
       await handleSubmit(LoanStatus.APPROVED)
     } catch (e) {
-      console.error('handleFinish error', e)
     } finally {
-      try { setViewerMode(false) } catch (e) {}
-      try { setSanctionMode(false) } catch (e) {}
+      try { setViewerMode(false) } catch (e) { }
+      try { setSanctionMode(false) } catch (e) { }
     }
   }
 
@@ -830,9 +967,9 @@ if (pdfFileName === 'Loan_Application_Form' &&
       if (typeof window !== 'undefined') window.currentAction = LoanStatus.INFO_REQUIRED
       removeReadOnly(); setLoanStatus(LoanStatus.INFO_REQUIRED)
       // dispatch comment for dashboard
-      try { const docId = loanId || getDocumentId(pdfFileName, count); const user = JSON.parse(localStorage.getItem('user')||'null'); const username = user?.username || user?.name || null; window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: pdfFileName, username, comments: 'Additional information required from applicant' } })) } catch (e) {}
+      try { const docId = loanId || getDocumentId(pdfFileName, count); const user = JSON.parse(localStorage.getItem('user') || 'null'); const username = user?.username || user?.name || null; window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: pdfFileName, username, comments: 'Additional information requested by Loan Officer — awaiting Loan Requestor update' } })) } catch (e) { }
       await handleSubmit(LoanStatus.INFO_REQUIRED); setViewerMode(false)
-    } catch (e) { console.error('handleInfoRequired error', e) }
+    } catch (e) { }
   }
 
   const handlePendingApproval = async () => {
@@ -841,10 +978,10 @@ if (pdfFileName === 'Loan_Application_Form' &&
       if (typeof window !== 'undefined') window.currentAction = LoanStatus.PENDING_APPROVAL
       setLoanStatus(LoanStatus.PENDING_APPROVAL)
       // dispatch comment for dashboard
-      try { const docId = loanId || getDocumentId(pdfFileName, count); const user = JSON.parse(localStorage.getItem('user')||'null'); const username = user?.username || user?.name || null; window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: pdfFileName, username, comments: 'Pending approval by Manager' } })) } catch (e) {}
+      try { const docId = loanId || getDocumentId(pdfFileName, count); const user = JSON.parse(localStorage.getItem('user') || 'null'); const username = user?.username || user?.name || null; window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: docId, fileName: pdfFileName, username, comments: 'Awaiting approval from Manager' } })) } catch (e) { }
       setViewerMode(false)
       await handleSubmit()
-    } catch (e) { console.error('handlePendingApproval error', e) }
+    } catch (e) { }
   }
 
   // Handlers for Loan Officer dropdown choices
@@ -856,43 +993,43 @@ if (pdfFileName === 'Loan_Application_Form' &&
       if (typeof window !== 'undefined') window.currentAction = LoanStatus.INFO_REQUIRED
       setLoanStatus(LoanStatus.INFO_REQUIRED)
       // dispatch local event so dashboard updates immediately
-      try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: loanId || getDocumentId(pdfFileName, count), fileName: pdfFileName, username: (JSON.parse(localStorage.getItem('user')||'null')?.username || JSON.parse(localStorage.getItem('user')||'null')?.name || null), comments: text } })) } catch (e) {}
+      try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: loanId || getDocumentId(pdfFileName, count), fileName: pdfFileName, username: (JSON.parse(localStorage.getItem('user') || 'null')?.username || JSON.parse(localStorage.getItem('user') || 'null')?.name || null), comments: text } })) } catch (e) { }
       setShowInfoMenu(false)
       setViewerMode(false)
       await handleSubmit(LoanStatus.INFO_REQUIRED)
-    } catch (e) { console.error('handleInfoChoice error', e) }
+    } catch (e) { }
   }
 
   const handleApprovalChoice = async (choice) => {
     try {
-      const user = JSON.parse(localStorage.getItem('user')||'null')
+      const user = JSON.parse(localStorage.getItem('user') || 'null')
       const username = user?.username || user?.name || null
       let overrideStatus = null
       if (choice === 'send_to_site') {
         if (typeof window !== 'undefined') window.currentAction = LoanStatus.VALIDATING
         setLoanStatus(LoanStatus.VALIDATING)
         overrideStatus = LoanStatus.VALIDATING
-        try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: loanId || getDocumentId(pdfFileName, count), fileName: pdfFileName, username, comments: 'Validating your loan application.' } })) } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent('loanCommentAdded', { detail: { documentId: loanId || getDocumentId(pdfFileName, count), fileName: pdfFileName, username, comments: 'Loan application sent for site verification — awaiting Site Officer review' } })) } catch (e) { }
       } else if (choice === 'approved') {
-  // Loan Officer approves -> move to Manager queue
-  if (typeof window !== 'undefined') window.currentAction = LoanStatus.PENDING_APPROVAL
-  setLoanStatus(LoanStatus.PENDING_APPROVAL)
-  overrideStatus = LoanStatus.PENDING_APPROVAL
-      try {
-    window.dispatchEvent(new CustomEvent('loanCommentAdded', {
-      detail: {
-        documentId: loanId || getDocumentId(pdfFileName, count),
-        fileName: pdfFileName,
-        username,
-        comments: 'Pending approval by Manager'
+        // Loan Officer approves -> move to Manager queue
+        if (typeof window !== 'undefined') window.currentAction = LoanStatus.PENDING_APPROVAL
+        setLoanStatus(LoanStatus.PENDING_APPROVAL)
+        overrideStatus = LoanStatus.PENDING_APPROVAL
+        try {
+          window.dispatchEvent(new CustomEvent('loanCommentAdded', {
+            detail: {
+              documentId: loanId || getDocumentId(pdfFileName, count),
+              fileName: pdfFileName,
+              username,
+              comments: 'Awaiting approval from Manager'
+            }
+          }))
+        } catch (e) { }
       }
-    }))
-  } catch (e) {}
-}
       setShowApprovalMenu(false)
       setViewerMode(false)
       await handleSubmit(overrideStatus)
-    } catch (e) { console.error('handleApprovalChoice error', e) }
+    } catch (e) { }
   }
 
   // Helper: check if LoanOfficerSignature field contains a value
@@ -910,7 +1047,7 @@ if (pdfFileName === 'Loan_Application_Form' &&
           if (val) return true
         }
       }
-    } catch (e) {}
+    } catch (e) { }
     return false
   }
 
@@ -944,8 +1081,8 @@ if (pdfFileName === 'Loan_Application_Form' &&
           if (subject.includes('signature') || author.includes('signature')) return true
           if ((a.shapeAnnotationType || a.annotationType || '').toString().toLowerCase().includes('signature')) return true
         }
-      } catch (e) {}
-    } catch (e) { console.warn('isApplicantSignatureFilled error', e) }
+      } catch (e) { }
+    } catch (e) { }
     return false
   }
 
@@ -983,7 +1120,7 @@ if (pdfFileName === 'Loan_Application_Form' &&
       }
 
       // explicit exceptions: these fields are NOT required for submit by default
-      const exceptions = new Set(['aphone','aadharcard','drivinglicense','passport','personalinfo','employmentinfo','comments','sitedate','loanofficersignature'])
+      const exceptions = new Set(['aphone', 'aadharcard', 'drivinglicense', 'passport', 'personalinfo', 'employmentinfo', 'comments', 'sitedate', 'loanofficersignature'])
       // For Site Officer role, require `personalinfo`, `employmentinfo`, `comments`, `sitedate`
       try {
         const roleLower = (role || '').toString().toLowerCase()
@@ -994,7 +1131,7 @@ if (pdfFileName === 'Loan_Application_Form' &&
           exceptions.delete('comments')
           exceptions.delete('sitedate')
         }
-      } catch (e) {}
+      } catch (e) { }
       if (exceptions.has(lname)) continue
 
       const value = (f.value || f.Value || f.FieldValue || '').toString().trim()
@@ -1015,42 +1152,133 @@ if (pdfFileName === 'Loan_Application_Form' &&
 
   const evaluateFields = () => {
     try {
-      const api = viewerRef.current; if (!api) return
-      const getter = api.retrieveFormFields || (api.pdfViewer && api.pdfViewer.retrieveFormFields)
-      const fields = (getter && getter.call(api)) || []
+      const api = viewerRef.current;
+      if (!api) return;
+
+      const getter =
+        api.retrieveFormFields ||
+        (api.pdfViewer && api.pdfViewer.retrieveFormFields);
+
+      const fields = (getter && getter.call(api)) || [];
+
+      // ✅ If fields not loaded
       if (!fields.length) {
-        // If fields have not yet loaded, for applicants keep Submit disabled
-        // (avoids the case where Submit is enabled until a signature/fields load)
         if (role !== 'Manager' && role !== 'Loan Officer') {
-          setShowBtn(false)
+          setShowBtn(false);
         } else {
-          setShowBtn(true)
+          setShowBtn(true);
         }
-        return
+        return;
       }
-      // Allow applicant signature to satisfy the requirement even if other
-      // fields are not yet considered filled. This ensures signing enables Submit.
-      const basicOk = areAllFieldsFilled(fields)
-      const applicantHasSig = (role !== 'Manager' && role !== 'Loan Officer') && isApplicantSignatureFilled()
-      const ok = basicOk || applicantHasSig
 
-      // Ensure staff roles (Manager / Loan Officer) always have action buttons
-      // visible/enabled. Loan Officer should see Approval immediately.
-      try {
-        const roleLowerEval = (role || '').toString().toLowerCase()
-        const storedLower = (storedUserRole || '').toString().toLowerCase()
-        const isLoanOfficerEval = ((roleLowerEval.includes('loan') && roleLowerEval.includes('officer')) || roleLowerEval.includes('loanofficer') || storedLower.includes('loan officer') || storedLower.includes('loanofficer'))
-        const isManagerEval = roleLowerEval.includes('manager') || storedLower.includes('manager')
-        if (isLoanOfficerEval || isManagerEval) {
-          setShowBtn(true)
-          return
+      const normalize = (name) =>
+        (name || "").toString().toLowerCase().replace(/\s/g, "");
+
+      // ============================
+      // ✅ REQUIRED FIELDS (STRICT)
+      // ============================
+      const requiredFields = [
+        "name",
+        "acno",
+        "dob",
+        "phone",
+        "emailid",
+        "address",
+        "state",
+        "pincode",
+        "employeename",
+        "designation",
+        "annualincome",
+        "loantype",
+        "amount",
+        "tenure",
+        "purpose",
+        "date",
+        "pancard",
+        "salaryslip",
+        "bankstatement",
+        "panattach",
+        "salaryattach",
+        "bankattach"
+      ];
+
+      let allMandatoryFilled = true;
+
+      for (let req of requiredFields) {
+
+        const field = fields.find(f => {
+          const name = normalize(f.name || f.fieldName);
+          return name === req;   // ✅ strict match
+        });
+
+        // ❌ FIELD NOT FOUND → FAIL
+        if (!field) {
+          allMandatoryFilled = false;
+          break;
         }
-      } catch (e) {}
 
-      setShowBtn(ok)
-      if (loanStatus === LoanStatus.REJECTED) setShowBtn(false)
-    } catch (e) { console.warn('evaluateFields error', e) }
-  }
+        const value = (field.value || "").toString().trim();
+        const checked = field.checked || field.isChecked || false;
+
+        const isFilled = value !== "" || checked;
+
+        // ❌ EMPTY → FAIL
+        if (!isFilled) {
+          allMandatoryFilled = false;
+          break;
+        }
+      }
+
+      // ============================
+      // ✅ APPLICANT SIGNATURE ONLY
+      // ============================
+      const applicantHasSig = fields.some(f => {
+        const name = normalize(f.name || f.fieldName);
+        const type = (f.type || f.fieldType || "").toLowerCase();
+
+        // ✅ ONLY applicant signature
+        if (name !== "applicantsignature") return false;
+
+        return f.value && f.value !== "";
+      });
+
+      // ============================
+      // ✅ FINAL LOGIC
+      // ============================
+      let ok = false;
+
+      if (role !== "Manager" && role !== "Loan Officer") {
+
+        if (loanStatus === LoanStatus.SIGN_REQUIRED) {
+          // ✅ ONLY signature required
+          ok = applicantHasSig;
+        } else {
+          // ✅ ALL fields + signature required
+          ok = allMandatoryFilled && applicantHasSig;
+        }
+
+        setShowBtn(ok);
+        return; // ✅ IMPORTANT → STOP HERE
+      }
+
+      // ✅ Staff always allowed
+      setShowBtn(true);
+
+    } catch (e) {
+      console.error("Validation error:", e);
+      setShowBtn(false);
+    }
+  };
+
+
+  const getMaxLength = (name) => {
+    const n = (name || '').toLowerCase();
+
+    if (n.includes('phone') || n.includes('mobile') || n.includes('anumber') || n.includes('contact')) return 10;
+    if (n.includes('pincode') || n.includes('pin')) return 6;
+    if (n.includes('dob') || n.includes('dateofbirth')) return 10; // dd/mm/yyyy
+    return null;
+  };
 
   const onFormFieldPropertiesChange = (args) => {
     if (args && args.isValueChanged) {
@@ -1062,19 +1290,168 @@ if (pdfFileName === 'Loan_Application_Form' &&
 
           const rawTargetName = (args && ((args.field && (args.field.name || args.field.fieldName)) || args.name || args.fieldName || args.fullName)) || ''
           const targetName = (rawTargetName + '').toString().toLowerCase()
+          // ✅ Email field validation
+          if (targetName.includes('emailid')) {
+            try {
+              const value = (args.value || args.newValue || args.field?.value || '').toString().trim();
+
+              // ❌ Reject multiple emails
+              if (value.includes(',') || value.includes(';')) {
+                window.alert('Only one Email ID is allowed');
+
+                // Clear field
+                viewerRef.current?.formDesignerModule?.updateFormField(
+                  { name: args.name || args.fieldName },
+                  { value: '' }
+                );
+                return;
+              }
+
+              // ❌ Reject unwanted special characters (allow only letters, numbers, @, .)
+              const emailRegex = /^[a-zA-Z0-9._]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+              if (!emailRegex.test(value)) {
+                window.alert('Invalid Email ID. Only valid format allowed (e.g., user@example.com)');
+
+                viewerRef.current?.formDesignerModule?.updateFormField(
+                  { name: args.name || args.fieldName },
+                  { value: '' }
+                );
+                return;
+              }
+
+            } catch (e) { }
+          }
+          // Detect name-like fields so we can enforce alphabet-only input
+          let isNameField = false
+          try {
+            // Prefer the sanction-type inference when available
+            if (typeof inferSanctionFieldType === 'function' && (inferSanctionFieldType(targetName) === 'name' || inferSanctionFieldType(targetName) === 'state' || inferSanctionFieldType(targetName) === 'employeename' || inferSanctionFieldType(targetName) === 'designation')) isNameField = true
+            // Common name-related keywords
+            if (!isNameField && /(name|fullname|applicant|customer|first.?name|last.?name|fname|lname)/.test(targetName)) isNameField = true
+          } catch (e) { isNameField = false }
 
           if (targetName) {
-            const numericKeywords = ['date','dob','dateofbirth','phone','mobile','contact','amount','tenure','number','no','age']
+            if (targetName && targetName.toLowerCase().includes('dob')) {
+
+              let raw = (args.field.value || args.newValue || '').toString();
+
+              // ✅ allow only digits
+              let digits = raw.replace(/\D/g, '');
+
+              // ✅ strictly allow ONLY 8 digits (ddmmyyyy)
+              if (digits.length > 8) {
+                digits = digits.slice(0, 8);
+
+                // ✅ show alert EVERY TIME
+                window.alert('Date of Birth must be in DD/MM/YYYY format');
+              }
+
+              // ✅ build format dd/MM/yyyy
+              let formatted = '';
+
+              if (digits.length > 0) {
+                formatted = digits.substring(0, 2);
+              }
+              if (digits.length >= 3) {
+                formatted += '/' + digits.substring(2, 4);
+              }
+              if (digits.length >= 5) {
+                // ✅ year ALWAYS max 4 digits
+                formatted += '/' + digits.substring(4, 8);
+              }
+
+              try {
+                const viewer = viewerRef.current;
+
+                if (viewer?.formDesignerModule) {
+                  viewer.formDesignerModule.updateFormField(
+                    { name: args.name || args.fieldName },
+                    { value: formatted }
+                  );
+                }
+              } catch (e) { }
+
+              return; // ✅ VERY IMPORTANT
+            }
+
+            const numericKeywords = ['date', 'dob', 'dateofbirth', 'phone', 'mobile', 'anumber', 'contact', 'amount', 'tenure', 'number', 'no', 'age', 'pincode', 'annualincome']
             let isNumericField = numericKeywords.some(k => targetName.includes(k))
             const fieldTypeRaw = (args.field && (args.field.type || args.field.fieldType || '')) || ''
             const fieldType = (fieldTypeRaw + '').toString().toLowerCase()
             const isSignatureField = fieldType.includes('signature')
             if (isSignatureField && isNumericField) isNumericField = false
 
-            if (isNumericField) {
+            // Enforce alphabet-only input for name-like fields
+            // Skip sanitization for signature fields (they contain non-letter data)
+            if (isNameField && !isSignatureField && !targetName.includes('signature')) {
+              try {
+                const argValue = (args.value || args.newValue || args.field?.value || args.field?.fieldValue || '').toString()
+                const argSanitized = argValue.replace(/[^A-Za-z\s'\-]/g, '')
+
+                const matchFieldName = (ff) => {
+                  const fnRaw = ((ff.name || ff.fieldName || '') + '').toString().toLowerCase(); if (!fnRaw) return false
+                  if (fnRaw === targetName) return true
+                  const fnLast = fnRaw.split(/\.|\[|\]/).filter(Boolean).pop() || fnRaw
+                  const tgtLast = targetName.split(/\.|\[|\]/).filter(Boolean).pop() || targetName
+                  if (fnLast === tgtLast) return true
+                  if (fnRaw.endsWith('.' + tgtLast) || fnRaw.endsWith('_' + tgtLast) || fnRaw.endsWith('/' + tgtLast) || fnRaw.endsWith(':' + tgtLast)) return true
+                  return false
+                }
+
+                let fName = fields.find(matchFieldName) || null
+                if (!fName) {
+                  const lastSeg = targetName.split(/\.|\[|\]/).filter(Boolean).pop() || targetName
+                  fName = fields.find(ff => (((ff.name || ff.fieldName || '') + '').toString().toLowerCase() === lastSeg) || (((ff.name || ff.fieldName || '') + '').toString().toLowerCase().endsWith(lastSeg))) || null
+                }
+
+                if (fName) {
+                  const raw = (fName.value || args.value || args.newValue || '').toString()
+                  const sanitized = raw.replace(/[^A-Za-z\s'\-]/g, '')
+                  if (raw !== sanitized) {
+                    try {
+                      fName.value = sanitized
+                      if (typeof viewer.updateFormFieldsValue === 'function') viewer.updateFormFieldsValue(fName)
+                      if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') viewer.formDesignerModule.updateFormField(fName, { value: sanitized })
+                      const alertKey = targetName || (args.name || args.fieldName || args.fullName || '').toString();
+                      try {
+                        const recentlyUser = typeof window !== 'undefined' && (Date.now() - (lastUserActionRef.current || 0) < 2000)
+                        if (typeof window !== 'undefined' && !alertedFieldsRef.current.has(alertKey) && recentlyUser) {
+                          try { window.alert('Please enter letters and spaces only for this field.') } catch { }
+                          alertedFieldsRef.current.add(alertKey)
+                        }
+                      } catch (e) { }
+                    } catch (e) { }
+                  } else {
+                    try { alertedFieldsRef.current.delete(targetName) } catch { }
+                  }
+                } else if (argSanitized !== argValue) {
+                  try {
+                    const argsFieldTypeRaw = (args.field && (args.field.type || args.field.fieldType || '')) || ''
+                    const argsFieldType = (argsFieldTypeRaw + '').toString().toLowerCase()
+                    const isArgsSignature = argsFieldType.includes('signature')
+                    if (!isArgsSignature) {
+                      if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') {
+                        viewer.formDesignerModule.updateFormField({ name: args.name || args.fieldName || args.fullName }, { value: argSanitized })
+                        const alertKey = targetName || (args.name || args.fieldName || args.fullName || '').toString();
+                        try {
+                          const recentlyUser = typeof window !== 'undefined' && (Date.now() - (lastUserActionRef.current || 0) < 2000)
+                          if (typeof window !== 'undefined' && !alertedFieldsRef.current.has(alertKey) && recentlyUser) {
+                            try { window.alert('Please enter letters and spaces only for this field.') } catch { }
+                            alertedFieldsRef.current.add(alertKey)
+                          }
+                        } catch (e) { }
+                      }
+                    }
+                  } catch (e) { }
+                }
+              } catch (e) { }
+            }
+
+            // Skip numeric sanitization for signature fields
+            if (isNumericField && !isSignatureField && !targetName.includes('signature')) {
               const argValue = (args.value || args.newValue || args.field?.value || args.field?.fieldValue || '').toString()
               const argSanitized = argValue.replace(/\D/g, '')
-
               const matchField = (ff) => {
                 const fnRaw = ((ff.name || ff.fieldName || '') + '').toString().toLowerCase(); if (!fnRaw) return false
                 if (fnRaw === targetName) return true
@@ -1093,41 +1470,154 @@ if (pdfFileName === 'Loan_Application_Form' &&
 
               const getDisallowedRegex = (name) => {
                 const n = (name || '').toString().toLowerCase()
-                if (n.includes('phone') || n.includes('mobile') || n.includes('contact')) return /[^0-9+\-()\s]/g
+                if (n.includes('phone') || n.includes('mobile') || n.includes('anumber') || n.includes('contact')) return /[^0-9+\-()\s]/g
                 if (n.includes('date') || n.includes('dob') || n.includes('dateofbirth')) return /[^0-9\/\-.]/g
                 if (n.includes('amount') || n.includes('amt')) return /[^0-9\.,]/g
                 return /[^0-9]/g
               }
+              // ✅ PHONE VALIDATION (exactly 10 digits)
+              if (targetName.includes('phone') || targetName.includes('mobile') || targetName.includes('anumber')) {
+                const value = (args.value || args.newValue || args.field?.value || '').toString();
+
+                const digits = value.replace(/\D/g, '');
+
+                const f = args.field;
+                if (!f) return;
+
+                // ✅ Remove alphabets
+                if (value !== digits) {
+                  f.value = digits;
+
+                  viewer.updateFormFieldsValue?.(f);
+                  viewer.formDesignerModule?.updateFormField?.(f, { value: digits });
+                }
+
+                // ✅ Trim + alert (more than 10)
+                if (digits.length > 10) {
+                  const trimmed = digits.slice(0, 10);
+
+                  window.alert('Phone number should not exceed 10 digits');
+
+                  f.value = trimmed;
+
+                  viewer.updateFormFieldsValue?.(f);
+                  viewer.formDesignerModule?.updateFormField?.(f, { value: trimmed });
+
+                  setTimeout(() => {
+                    try {
+                      f.value = trimmed;
+                      viewer.updateFormFieldsValue?.(f);
+                      viewer.formDesignerModule?.updateFormField?.(f, { value: trimmed });
+                    } catch { }
+                  }, 0);
+
+                  return;
+                }
+
+                // ✅ NEW: Alert if less than 10 digits
+                if (digits.length > 0 && digits.length < 10) {
+                  window.alert('Phone number must be exactly 10 digits');
+                }
+              }
+
+              // ✅ PINCODE VALIDATION (exactly 6 digits)
+              if (targetName.includes('pincode') || targetName.includes('pin')) {
+                const value = (args.value || args.newValue || args.field?.value || '').toString();
+
+                const digits = value.replace(/\D/g, '');
+
+                const f = args.field;
+                if (!f) return;
+
+                // ✅ Remove alphabets
+                if (value !== digits) {
+                  f.value = digits;
+
+                  viewer.updateFormFieldsValue?.(f);
+                  viewer.formDesignerModule?.updateFormField?.(f, { value: digits });
+                }
+
+                // ✅ Trim + alert (> 6)
+                if (digits.length > 6) {
+                  const trimmed = digits.slice(0, 6);
+
+                  window.alert('Pincode should not exceed 6 digits');
+
+                  f.value = trimmed;
+
+                  viewer.updateFormFieldsValue?.(f);
+                  viewer.formDesignerModule?.updateFormField?.(f, { value: trimmed });
+
+                  setTimeout(() => {
+                    try {
+                      f.value = trimmed;
+                      viewer.updateFormFieldsValue?.(f);
+                      viewer.formDesignerModule?.updateFormField?.(f, { value: trimmed });
+                    } catch { }
+                  }, 0);
+
+                  return;
+                }
+
+                // ✅ NEW: Alert if less than 6 digits
+                if (digits.length > 0 && digits.length < 6) {
+                  window.alert('Pincode must be exactly 6 digits');
+                }
+              }
+
+
 
               if (f) {
                 const raw = (f.value || args.value || args.newValue || '').toString()
                 const disallowedRe = getDisallowedRegex(targetName)
-                let sanitized
-                try { sanitized = raw.replace(disallowedRe, '') } catch { sanitized = raw.replace(/[^0-9]/g, '') }
+                let sanitized = raw.replace(disallowedRe, '')
 
-                if (raw !== sanitized) {
-                  try {
-                    const fTypeRaw2 = (f && (f.type || f.fieldType || '')) || ''
-                    const fType2 = (fTypeRaw2 + '').toString().toLowerCase()
-                    if (!fType2.includes('signature')) {
-                      f.value = sanitized
-                      if (typeof viewer.updateFormFieldsValue === 'function') viewer.updateFormFieldsValue(f)
-                      if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') viewer.formDesignerModule.updateFormField(f, { value: sanitized })
-                      const alertKey = targetName || (args.name || args.fieldName || args.fullName || '').toString();
-                      if (typeof window !== 'undefined' && !alertedFieldsRef.current.has(alertKey)) {
-                        try {
-                          let msg = 'Please enter numbers only for this field.'
-                          if (targetName.includes('phone') || targetName.includes('mobile') || targetName.includes('contact')) msg = 'Please enter digits and permitted phone characters only (+ - ( ) ).'
-                          if (targetName.includes('date') || targetName.includes('dob') || targetName.includes('dateofbirth')) msg = 'Please enter digits and permitted date characters only (/, -, .).'
-                          if (targetName.includes('amount')) msg = 'Please enter digits and permitted amount characters only (.,).'
-                          window.alert(msg)
-                        } catch {}
-                        alertedFieldsRef.current.add(alertKey)
+                // ✅ enforce max length ALWAYS
+                const maxLength = getMaxLength(targetName);
+
+                if (maxLength) {
+                  const rawLength = raw.length;
+
+                  if (rawLength > maxLength) {
+
+                    // Trim value
+                    sanitized = sanitized.slice(0, maxLength);
+                  }
+                }
+                if (targetName.includes('dob') || targetName.includes('dateofbirth')) {
+                  sanitized = sanitized.slice(0, 10);
+                }
+
+                // ✅ IMPORTANT: trigger update also for length overflow
+                if (raw !== sanitized || (maxLength && raw.length > maxLength)) {
+
+                  f.value = sanitized;
+
+                  if (typeof viewer.updateFormFieldsValue === 'function') {
+                    viewer.updateFormFieldsValue(f);
+                  }
+
+                  if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') {
+                    viewer.formDesignerModule.updateFormField(f, { value: sanitized });
+                  }
+
+                  // ✅ ensure Syncfusion does not override
+                  setTimeout(() => {
+                    try {
+                      f.value = sanitized;
+
+                      if (typeof viewer.updateFormFieldsValue === 'function') {
+                        viewer.updateFormFieldsValue(f);
                       }
-                    }
-                  } catch {}
-                } else {
-                  try { alertedFieldsRef.current.delete(targetName) } catch {}
+
+                      if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') {
+                        viewer.formDesignerModule.updateFormField(f, { value: sanitized });
+                      }
+                    } catch (e) { }
+                  }, 0);
+                }
+                else {
+                  try { alertedFieldsRef.current.delete(targetName) } catch { }
                 }
               } else if (argSanitized !== argValue) {
                 try {
@@ -1141,24 +1631,75 @@ if (pdfFileName === 'Loan_Application_Form' &&
                       try { fallbackSanitized = argValue.replace(disallowedRe, '') } catch { fallbackSanitized = argValue.replace(/[^0-9]/g, '') }
                       viewer.formDesignerModule.updateFormField({ name: args.name || args.fieldName || args.fullName }, { value: fallbackSanitized })
                       const alertKey = targetName || (args.name || args.fieldName || args.fullName || '').toString();
-                      if (typeof window !== 'undefined' && !alertedFieldsRef.current.has(alertKey)) {
-                        try {
-                          let msg = 'Please enter numbers only for this field.'
-                          if (targetName.includes('phone') || targetName.includes('mobile') || targetName.includes('contact')) msg = 'Please enter digits and permitted phone characters only (+ - ( ) ).'
-                          if (targetName.includes('date') || targetName.includes('dob') || targetName.includes('dateofbirth')) msg = 'Please enter digits and permitted date characters only (/, -, .).'
-                          if (targetName.includes('amount')) msg = 'Please enter digits and permitted amount characters only (.,).'
-                          window.alert(msg)
-                        } catch {}
-                        alertedFieldsRef.current.add(alertKey)
-                      }
+                      try {
+                        const recentlyUser = typeof window !== 'undefined' && (Date.now() - (lastUserActionRef.current || 0) < 2000)
+                        if (typeof window !== 'undefined' && !alertedFieldsRef.current.has(alertKey) && recentlyUser) {
+                          try {
+                            let msg = 'Please enter numbers only for this field.'
+                            if (targetName.includes('phone') || targetName.includes('anumber') || targetName.includes('mobile') || targetName.includes('contact')) msg = 'Please enter digits and permitted phone characters only (+ - ( ) ).'
+                            if (
+                              targetName.includes('dob') ||
+                              targetName.includes('dateofbirth') ||
+                              targetName === 'date'
+                            ) {
+                              let raw = (args.value || args.newValue || '').toString();
+
+                              // ❌ remove everything except digits
+                              let digits = raw.replace(/\D/g, '');
+
+                              // ❌ block if more than 8 digits (ddmmyyyy)
+                              if (digits.length > 8) {
+                                digits = digits.slice(0, 8);
+
+                                const alertKey = targetName;
+                                if (!alertedFieldsRef.current.has(alertKey)) {
+                                  window.alert('Date of Birth must be in DD/MM/YYYY format');
+                                  alertedFieldsRef.current.add(alertKey);
+                                }
+                              } else {
+                                alertedFieldsRef.current.delete(targetName);
+                              }
+
+                              // ✅ format dd/MM/yyyy
+                              let formatted = '';
+
+                              if (digits.length > 0) {
+                                formatted = digits.substring(0, 2);
+                              }
+                              if (digits.length >= 3) {
+                                formatted += '/' + digits.substring(2, 4);
+                              }
+                              if (digits.length >= 5) {
+                                formatted += '/' + digits.substring(4, 8);
+                              }
+
+                              // ✅ update field
+                              try {
+                                if (viewer.formDesignerModule) {
+                                  viewer.formDesignerModule.updateFormField(
+                                    { name: args.name || args.fieldName },
+                                    { value: formatted }
+                                  );
+                                }
+                              } catch (e) { }
+
+                              return; // ✅ stop further generic numeric logic
+                            }
+
+                            if (targetName.includes('amount')) msg = 'Please enter digits and permitted amount characters only (.,).'
+                            window.alert(msg)
+                          } catch { }
+                          alertedFieldsRef.current.add(alertKey)
+                        }
+                      } catch (e) { }
                     }
                   }
-                } catch {}
+                } catch { }
               }
             }
           }
         }
-      } catch (e) { console.warn('onFormFieldPropertiesChange sanitization error', e) }
+      } catch (e) { }
       setTimeout(() => { evaluateFields() }, 100)
     }
     if (sanctionMode) { checkManagerSignature() }
@@ -1175,47 +1716,41 @@ if (pdfFileName === 'Loan_Application_Form' &&
       const rawName = overrideName || (pdfFileName || 'Loan_Application_Form')
       const filename = (rawName && rawName.toString().toLowerCase().endsWith('.pdf')) ? rawName : `${rawName}.pdf`
       const resp = await fetch(`${base}/api/Authentication/GetPdfStream/${encodeURIComponent(filename)}`)
-      if (!resp.ok) { console.error('Failed to fetch PDF', resp.status); return }
+      if (!resp.ok) { return }
       const blob = await resp.blob()
-      try { if (window._lastPdfBlobUrl) URL.revokeObjectURL(window._lastPdfBlobUrl) } catch {}
+      try { if (window._lastPdfBlobUrl) URL.revokeObjectURL(window._lastPdfBlobUrl) } catch { }
       const blobUrl = URL.createObjectURL(blob)
       window._lastPdfBlobUrl = blobUrl
       if (viewer.load || viewer.open) {
-        try { await safeViewerLoad(viewer, blobUrl) } catch (e) { console.warn('viewer.load failed', e) }
+        try { await safeViewerLoad(viewer, blobUrl) } catch (e) { }
         // If there are pending sanction values captured earlier, apply them after a short delay
         try {
-        if (pendingSanctionValuesRef.current) {
+          if (pendingSanctionValuesRef.current) {
             const vals = pendingSanctionValuesRef.current
             // Ensure the captured values are stored in state so other flows (onDocumentLoad)
             // and UpdateForm can see them as well.
-            try { setSanctionValues(vals) } catch (e) {}
+            try { setSanctionValues(vals) } catch (e) { }
 
             // After the merged PDF is loaded into the viewer, retrieve its form fields
             // and populate name/amount/tenure/date directly (retry briefly if fields not yet available).
             setTimeout(() => {
               try {
-                console.log('🔄 [resourcesLoaded] Applying pending sanction values:', vals)
-            // Direct fill by exact field names (applicantname, amount, tenure, date)
-            try {
-              const directSet = setSanctionFieldsDirect(viewer, vals);
-              console.log('✅ [resourcesLoaded] Direct-set count:', directSet);
-            } catch(e) { console.warn('resourcesLoaded direct-set error', e); }
+                // Direct fill by exact field names (applicantname, amount, tenure, date)
+                try {
+                  const directSet = setSanctionFieldsDirect(viewer, vals);
+                } catch (e) { }
 
                 const formsAfter = (viewer.retrieveFormFields && viewer.retrieveFormFields()) || []
-                console.log(`📋 [resourcesLoaded] Found ${formsAfter.length} fields in merged PDF`)
-                
+
                 if (!formsAfter || formsAfter.length === 0) {
-                  console.warn('⚠️ [resourcesLoaded] No fields found, calling UpdateForm fallback')
                   // If fields are not ready, fall back to calling UpdateForm which has its own retries
-                  try { UpdateForm(vals) } catch (e) { console.warn('UpdateForm fallback failed', e) }
+                  try { UpdateForm(vals) } catch (e) { }
                 } else {
-                  console.log('🔍 [resourcesLoaded] Iterating through fields to apply values...')
                   for (let i = 0; i < formsAfter.length; i++) {
                     try {
                       const fname = formsAfter[i].name || formsAfter[i].fieldName || formsAfter[i].id || null
                       if (!fname) continue
                       const fieldType = inferSanctionFieldType(fname)
-                      console.log(`  Field[${i}]: "${fname}" → type: ${fieldType}`)
                       if (!fieldType) continue
                       let newVal = null
                       if (fieldType === 'name') newVal = vals.name || ''
@@ -1223,224 +1758,189 @@ if (pdfFileName === 'Loan_Application_Form' &&
                       else if (fieldType === 'tenure') newVal = vals.tenure || ''
                       else if (fieldType === 'date') newVal = vals.date || new Date().toLocaleDateString('en-GB')
                       if (newVal != null) {
-                        console.log(`    ✅ Setting ${fieldType} = "${newVal}"`)
                         try {
                           const upd = { name: fname, value: newVal }
                           if (typeof viewer.updateFormFieldsValue === 'function') viewer.updateFormFieldsValue(upd)
                           if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') viewer.formDesignerModule.updateFormField({ name: fname }, { value: newVal, isReadOnly: true })
-                        } catch (e) { console.warn(`Failed to set field ${fname}:`, e) }
+                        } catch (e) { }
                       }
-                    } catch (e) { console.warn('Error processing field', i, e) }
+                    } catch (e) { }
                   }
-                  console.log('✅ [resourcesLoaded] Finished applying values to merged PDF')
                 }
-              } catch (e) { console.warn('Failed to apply pending sanction values to merged PDF', e) }
-              try { pendingSanctionValuesRef.current = null } catch (e) {}
+              } catch (e) { }
+              try { pendingSanctionValuesRef.current = null } catch (e) { }
             }, 300)
           }
         } catch (e) { /* ignore */ }
       }
       if (filename) {
-        try { await fetchServerAttachments(filename) } catch (e) { console.warn('Failed to fetch server attachments', e) }
+        try {
+          // import any previously saved annotations for this document
+          try {
+            const tryImportWithRetry = async (attempts = 6, delay = 250) => {
+              for (let i = 0; i < attempts; i++) {
+                try {
+                  const ok = importSavedAnnotations()
+                  if (ok) { return true }
+                } catch (e) { /* continue */ }
+                await new Promise(r => setTimeout(r, delay * (i + 1)))
+              }
+              return false
+            }
+            tryImportWithRetry().catch(() => { })
+          } catch (e) { }
+          await fetchServerAttachments(filename)
+        } catch (e) { }
       }
+      setTimeout(() => {
+        try {
+          setCustomStampAuthors(); // 🔥 reapply after reload
+        } catch (e) { }
+      }, 500);
       // Document and (attempted) attachments have been loaded — enable Sign Request
-      try { setSignRequestEnabled(true) } catch (e) {}
-    } catch (err) { console.error('Error loading PDF:', err) }
+      try {
+        // if (sanctionMode) {
+        //     setSignRequestEnabled(true);
+        //   }
+      } catch (e) { }
+    } catch (err) { }
   }
 
-  // function readOnly() {
-  //   const viewer = viewerRef.current; if (!viewer) return
-  //   const forms = (viewer.retrieveFormFields && viewer.retrieveFormFields()) || []
-
-  //   // Retry a few times if fields are not yet available (viewer may populate them asynchronously)
-  //   if (!forms || forms.length === 0) {
-  //     if ((readOnlyAttemptsRef.current || 0) < 6) {
-  //       readOnlyAttemptsRef.current = (readOnlyAttemptsRef.current || 0) + 1
-  //       setTimeout(() => {
-  //         try { readOnly() } catch (e) {}
-  //       }, 250)
-  //       return
-  //     }
-  //   }
-  //   // reset attempts when we have fields
-  //   readOnlyAttemptsRef.current = 0
-
-  //   const roleLower = (role || '').toString().toLowerCase()
-  //   const isSiteOfficer = roleLower.includes('site') || (storedUserRole || '').toString().toLowerCase().includes('site')
-  //   const isApplicant = (role !== 'Manager' && role !== 'Loan Officer') && !isSiteOfficer
-
-  //   for (let i = 0; i < forms.length; i++) {
-  //     try {
-  //       const f = forms[i]
-  //       const fname = (f.name || f.fieldName || '').toString().toLowerCase()
-
-  //       // Case 1: Applicant (loan requestor) — these fields should always be readonly for the applicant
-  //       if (isApplicant) {
-  //         if (fname.includes('personalinfo') || fname.includes('employmentinfo') || fname.includes('comments') || fname.includes('sitedate') || fname.includes('loanofficer')) {
-  //           viewer.formDesignerModule.updateFormField(f, { isReadOnly: true })
-  //           continue
-  //         }
-  //       }
-
-  //       // Case 2: Site officer — ensure LoanOfficerSignature is readonly for site engineer
-  //       if (isSiteOfficer && fname === 'loanofficersignature') {
-  //         viewer.formDesignerModule.updateFormField(f, { isReadOnly: true })
-  //         continue
-  //       }
-
-  //       // Fallback: preserve original behaviour driven by sanctionMode and loan status
-  //       if (sanctionMode) {
-  //         if ((f.type || '').toString().toLowerCase() === 'signaturefield' && (f.value === '' || f.value == null)) {
-  //           f.isReadOnly = false
-  //           viewer.formDesignerModule.updateFormField(f, { isReadOnly: false })
-  //         } else {
-  //           viewer.formDesignerModule.updateFormField(f, { isReadOnly: true })
-  //         }
-  //       } else {
-  //         if (((loanStatus === LoanStatus.UNDER_REVIEW || loanStatus === LoanStatus.INFO_REQUIRED) && (f.value === '' || f.value == null)) ||
-  //             ((loanStatus === LoanStatus.PENDING_APPROVAL || loanStatus === LoanStatus.INFO_REQUIRED) && role === 'Loan Officer' && (f.name === 'LoanOfficerSignature' || f.name === 'LoanOfficerSignature'))) {
-  //           f.isReadOnly = false
-  //           viewer.formDesignerModule.updateFormField(f, { isReadOnly: false })
-  //         } 
-  //       }
-  //     } catch (e) { /* ignore per-field errors */ }
-  //   }
-  // }
-
-function readOnly() {
+  function readOnly() {
     const viewer = viewerRef.current;
     if (!viewer) return;
 
     const forms =
-        (viewer.retrieveFormFields && viewer.retrieveFormFields()) || [];
+      (viewer.retrieveFormFields && viewer.retrieveFormFields()) || [];
 
     if (!forms || forms.length === 0) {
-        if ((readOnlyAttemptsRef.current || 0) < 6) {
-            readOnlyAttemptsRef.current =
-                (readOnlyAttemptsRef.current || 0) + 1;
-            setTimeout(() => { try { readOnly(); } catch (e) {} }, 250);
-            return;
-        }
+      if ((readOnlyAttemptsRef.current || 0) < 6) {
+        readOnlyAttemptsRef.current =
+          (readOnlyAttemptsRef.current || 0) + 1;
+        setTimeout(() => { try { readOnly(); } catch (e) { } }, 250);
+        return;
+      }
     }
 
     readOnlyAttemptsRef.current = 0;
-    
-if (loanStatus === LoanStatus.APPROVED) {
-    for (let i = 0; i < forms.length; i++) {
-        try {
-            viewer.formDesignerModule.updateFormField(forms[i], { isReadOnly: true });
-        } catch (e) {}
-    }
-    return;
-}
+    if (loanStatus === LoanStatus.NEW) {
+      const roleLower = (role || "").toString().toLowerCase();
 
-
-    const roleLower = (role || "").toString().toLowerCase();
-    const isSiteOfficer =
+      const isSiteOfficer =
         roleLower.includes("site") ||
         (storedUserRole || "").toString().toLowerCase().includes("site");
 
+      const isApplicant =
+        role !== "Manager" &&
+        role !== "Loan Officer" &&
+        !isSiteOfficer;
+
+      if (isApplicant) {
+        const allowedFields = new Set([
+          'aadharattach',
+          'panattach',
+          'panatatch',
+          'salaryattach',
+          'bankattach',
+          'drivingattach',
+          'passportattach'
+        ]);
+
+        for (let i = 0; i < forms.length; i++) {
+          try {
+            const f = forms[i];
+            const fname = ((f.name || f.fieldName || '') + '')
+              .toString()
+              .toLowerCase();
+
+            const editable = allowedFields.has(fname);
+
+            try {
+              viewer.formDesignerModule.updateFormField(f, {
+                isReadOnly: !editable
+              });
+            } catch (e) { }
+
+          } catch (e) { }
+        }
+
+        return;   // ✅ VERY IMPORTANT → stop further logic
+      }
+    }
+    if (loanStatus === LoanStatus.APPROVED) {
+      // Preserve attachment fields as editable for applicants even when approved
+      const alwaysEditable = new Set(['aadharattach', 'panattach', 'panatatch', 'salaryattach', 'bankattach', 'drivingattach', 'passportattach'])
+      for (let i = 0; i < forms.length; i++) {
+        try {
+          const f = forms[i]
+          const nm = ((f.name || f.fieldName || '') + '').toString().toLowerCase()
+          const editable = alwaysEditable.has(nm)
+          try { viewer.formDesignerModule.updateFormField(f, { isReadOnly: !editable }) } catch (e) { }
+        } catch (e) { }
+      }
+      return;
+    }
+    const roleLower = (role || "").toString().toLowerCase();
+    const isSiteOfficer =
+      roleLower.includes("site") ||
+      (storedUserRole || "").toString().toLowerCase().includes("site");
+
     const isApplicant =
-        role !== "Manager" && role !== "Loan Officer" && !isSiteOfficer;
+      role !== "Manager" && role !== "Loan Officer" && !isSiteOfficer;
 
     for (let i = 0; i < forms.length; i++) {
-        try {
-            const f = forms[i];
-            const fname = (
-                f.name || f.fieldName || ""
-            )
-                .toString()
-                .toLowerCase();
-
-            /* ----------------------------------------------------------
-               🔹 NEW CASE 1 — Applicant + SIGN_REQUIRED
-               ---------------------------------------------------------- */
-            // if (isApplicant && loanStatus === LoanStatus.SIGN_REQUIRED) {
-            //     const blockSet = new Set([
-            //         "applicantname",
-            //         "amount",
-            //         "tenure",
-            //         "date",
-            //         "managersignature"
-            //     ]);
-
-            //     if (blockSet.has(fname)) {
-            //         viewer.formDesignerModule.updateFormField(f, {
-            //             isReadOnly: true
-            //         });
-            //         continue;
-            //     }
-            // }
-
-            // /* ----------------------------------------------------------
-            //    🔹 NEW CASE 2 — Manager + PENDING_APPROVAL
-            //    ---------------------------------------------------------- */
-            // if (role === "Manager" && loanStatus === LoanStatus.PENDING_APPROVAL) {
-            //     const blockSet = new Set([
-            //         "applicantname",
-            //         "amount",
-            //         "tenure",
-            //         "date",
-            //         "applicantsignature"
-            //     ]);
-
-            //     if (blockSet.has(fname)) {
-            //         viewer.formDesignerModule.updateFormField(f, {
-            //             isReadOnly: true
-            //         });
-            //         continue;
-            //     }
-            // }
-
-            /* ----------------------------------------------------------
-               EXISTING LOGIC — (not modified)
-               ---------------------------------------------------------- */
-
-            // Applicant cannot edit these fields
-            if (isApplicant) {
-                if (
-                    fname.includes("employmentinfo") ||
-                    fname.includes("personalinfo") ||
-                    fname.includes("sitedate") ||
-                    fname.includes("loanofficersignature") ||
-                    fname.includes("comments")
-                ) {
-                    viewer.formDesignerModule.updateFormField(f, {
-                        isReadOnly: true
-                    });
-                } else {
-                    viewer.formDesignerModule.updateFormField(f, {
-                        isReadOnly: false
-                    });
-                }
-                continue;
-            }
-
-            // Staff editable list (when not approved)
-            const staffAllowed = new Set([
-                "aadharattach",
-                "panattach",
-                "panatatch",
-                "salaryattach",
-                "bankattach",
-                "drivingattach",
-                "passportattach",
-                "employmentinfo",
-                "personalinfo",
-                "sitedate",
-                "loanofficersignature",
-                "comments"
-            ]);
-
-            const editable = staffAllowed.has(fname);
-
+      try {
+        const f = forms[i];
+        const fname = (
+          f.name || f.fieldName || ""
+        )
+          .toString()
+          .toLowerCase();
+        // Applicant cannot edit these fields
+        if (isApplicant) {
+          if (
+            fname.includes("employmentinfo") ||
+            fname.includes("personalinfo") ||
+            fname.includes("sitedate") ||
+            fname.includes("loanofficersignature") ||
+            fname.includes("comments")
+          ) {
             viewer.formDesignerModule.updateFormField(f, {
-                isReadOnly: !editable
+              isReadOnly: true
             });
+          } else {
+            viewer.formDesignerModule.updateFormField(f, {
+              isReadOnly: false
+            });
+          }
+          continue;
+        }
 
-        } catch (e) {}
+        // Staff editable list (when not approved)
+        const staffAllowed = new Set([
+          "aadharattach",
+          "panattach",
+          "panatatch",
+          "salaryattach",
+          "bankattach",
+          "drivingattach",
+          "passportattach",
+          "employmentinfo",
+          "personalinfo",
+          "sitedate",
+          "loanofficersignature",
+          "comments"
+        ]);
+
+        const editable = staffAllowed.has(fname);
+
+        viewer.formDesignerModule.updateFormField(f, {
+          isReadOnly: !editable
+        });
+
+      } catch (e) { }
     }
-}
+  }
 
 
   function removeReadOnly() {
@@ -1448,65 +1948,58 @@ if (loanStatus === LoanStatus.APPROVED) {
     const forms = viewer.retrieveFormFields(); for (let i = 0; i < forms.length; i++) viewer.formDesignerModule.updateFormField(forms[i], { isReadOnly: false })
   }
 
-  
-function setSanctionFieldsDirect(viewer, vals) {
-  try {
-    if (!viewer) return 0;
-    const getter = viewer.retrieveFormFields || (viewer.pdfViewer && viewer.pdfViewer.retrieveFormFields);
-    const fields = (getter && getter.call(viewer)) || [];
-    const want = {
-      applicantname: vals?.name || '',
-      amount: vals?.amount || '',
-      tenure: vals?.tenure || '',
-      date: new Date().toLocaleDateString('en-GB')
-    };
-    const names = Object.keys(want);
-    let setCount = 0;
-    for (let i=0;i<fields.length;i++) {
-      try {
-        const f = fields[i];
-        const raw = (f.name || f.fieldName || f.id || '').toString();
-        if (!raw) continue;
-        const nm = raw.trim().toLowerCase();
-        if (!names.includes(nm)) continue;
-        const newVal = want[nm];
-        if (newVal==null) continue;
-        f.value = newVal;
-        if (typeof viewer.updateFormFieldsValue === 'function') viewer.updateFormFieldsValue(f);
-        if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') viewer.formDesignerModule.updateFormField(f, { value: newVal, isReadOnly: true });
-        setCount++;
-      } catch(e) { /* continue */ }
-    }
-    return setCount;
-  } catch (e) { return 0; }
-}
 
-function UpdateForm(overrideValues) {
+  function setSanctionFieldsDirect(viewer, vals) {
+    try {
+      if (!viewer) return 0;
+      const getter = viewer.retrieveFormFields || (viewer.pdfViewer && viewer.pdfViewer.retrieveFormFields);
+      const fields = (getter && getter.call(viewer)) || [];
+      const want = {
+        applicantname: vals?.name || '',
+        amount: vals?.amount || '',
+        tenure: vals?.tenure || '',
+        date: new Date().toLocaleDateString('en-GB')
+      };
+      const names = Object.keys(want);
+      let setCount = 0;
+      for (let i = 0; i < fields.length; i++) {
+        try {
+          const f = fields[i];
+          const raw = (f.name || f.fieldName || f.id || '').toString();
+          if (!raw) continue;
+          const nm = raw.trim().toLowerCase();
+          if (!names.includes(nm)) continue;
+          const newVal = want[nm];
+          if (newVal == null) continue;
+          f.value = newVal;
+          if (typeof viewer.updateFormFieldsValue === 'function') viewer.updateFormFieldsValue(f);
+          if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') viewer.formDesignerModule.updateFormField(f, { value: newVal, isReadOnly: true });
+          setCount++;
+        } catch (e) { /* continue */ }
+      }
+      return setCount;
+    } catch (e) { return 0; }
+  }
+
+  function UpdateForm(overrideValues) {
     const vals = overrideValues || sanctionValues || { name: '', amount: '', tenure: '', date: '' }
-    console.log('🔄 [UpdateForm] Called with values:', vals)
-    const viewer = viewerRef.current; if (!viewer) { console.warn('[UpdateForm] No viewer ref'); return }
+    const viewer = viewerRef.current; if (!viewer) { return }
     const forms = (viewer.retrieveFormFields && viewer.retrieveFormFields()) || []
-    console.log(`📋 [UpdateForm] Found ${forms.length} fields`)
-    
+
     // If fields are not yet available, retry a few times (viewer may populate them asynchronously)
     if (!forms || forms.length === 0) {
       if ((applySanctionAttemptsRef.current || 0) < 6) {
         applySanctionAttemptsRef.current = (applySanctionAttemptsRef.current || 0) + 1
-        console.log(`⏳ [UpdateForm] Retry attempt ${applySanctionAttemptsRef.current}/6`)
-        setTimeout(() => { try { UpdateForm(overrideValues) } catch (e) {} }, 300)
+        setTimeout(() => { try { UpdateForm(overrideValues) } catch (e) { } }, 300)
         return
       }
-      console.warn('⚠️ [UpdateForm] Failed after 6 attempts, no fields found')
     }
     applySanctionAttemptsRef.current = 0
-
-    console.log('🔍 [UpdateForm] Iterating through fields to apply values...')
     for (let i = 0; i < forms.length; i++) {
       try {
         const fname = forms[i].name || forms[i].fieldName || forms[i].id || null
         if (!fname) continue
         const fieldType = inferSanctionFieldType(fname)
-        console.log(`  Field[${i}]: "${fname}" → type: ${fieldType}`)
         if (!fieldType) continue
         let newVal = null
         if (fieldType === 'name') newVal = vals.name || ''
@@ -1514,21 +2007,19 @@ function UpdateForm(overrideValues) {
         else if (fieldType === 'tenure') newVal = vals.tenure || ''
         else if (fieldType === 'date') newVal = vals.date || new Date().toLocaleDateString('en-GB')
         if (newVal != null) {
-          console.log(`    ✅ Setting ${fieldType} = "${newVal}"`)
           try {
             const upd = { name: fname, value: newVal }
             if (typeof viewer.updateFormFieldsValue === 'function') viewer.updateFormFieldsValue(upd)
             if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') viewer.formDesignerModule.updateFormField({ name: fname }, { value: newVal, isReadOnly: true })
-          } catch (e) { console.warn(`Failed to set field ${fname}:`, e) }
+          } catch (e) { }
         }
-      } catch (e) { console.warn('Error processing field', i, e) }
+      } catch (e) { }
     }
-    console.log('✅ [UpdateForm] Finished applying values')
     setShowBtn(false)
   }
 
   function checkManagerSignature() {
-    try { const viewer = viewerRef.current; if (!viewer) return; const forms = viewer.retrieveFormFields() || []; const sig = forms.find(f => (f.name || f.fieldName || '').toString().toLowerCase() === 'managersignature'); const hasValue = sig && (sig.value || '').toString().trim() !== ''; setFinishEnabled(Boolean(hasValue)) } catch (e) { console.warn('checkManagerSignature error', e); setFinishEnabled(false) }
+    try { const viewer = viewerRef.current; if (!viewer) return; const forms = viewer.retrieveFormFields() || []; const sig = forms.find(f => (f.name || f.fieldName || '').toString().toLowerCase() === 'managersignature'); const hasValue = sig && (sig.value || '').toString().trim() !== ''; setFinishEnabled(Boolean(hasValue)) } catch (e) { setFinishEnabled(false) }
   }
 
   function downloadStart() { const viewer = viewerRef.current; if (!viewer) return; viewerRef.current.downloadFileName = pdfFileName }
@@ -1570,13 +2061,73 @@ function UpdateForm(overrideValues) {
           // If it's a remote URL, attempt robust fetch with fallback candidates to avoid 404s
           if (typeof src === 'string' && src.startsWith('http')) {
             try {
-             let candidates = getAttachmentCandidates(pdfFileName, file.name
-        ,file.originalName 
-        ,'')
-// include the direct src as first candidate
-if (!candidates.includes(src)) candidates.unshift(src)
-// keep only URLs matching API_BASE origin to avoid hitting a different backend
-candidates = filterCandidatesToApiBaseOrigin(candidates)
+              // Prefer loading remote attachments via the app's `resourcesLoaded` flow
+              // which fetches the server PDF and applies app-level handling.
+              const attachmentName = file.name || (function () { try { return decodeURIComponent(new URL(src).pathname.split('/').pop().split('?')[0]) } catch (e) { return null } })()
+              if (attachmentName) {
+                // Serialize attachment loads so rapid consecutive opens don't
+                // race and cause viewer-internal state problems. Add small
+                // delays before calling `resourcesLoaded` and use exponential
+                // backoff between attempts to give the viewer time to settle.
+                const maxAttempts = 4
+                let attempt = 0
+                let succeeded = false
+                while (attempt < maxAttempts && !succeeded) {
+                  attempt++
+                  try {
+                    // wait for any ongoing attachment load to finish
+                    await (async () => {
+                      const start = Date.now()
+                      while (attachmentLoadLockRef.current) {
+                        // timeout guard to avoid infinite wait
+                        if (Date.now() - start > 10000) break
+                        await new Promise(r => setTimeout(r, 120))
+                      }
+                      attachmentLoadLockRef.current = true
+                    })()
+
+                    try {
+                      // Small pre-call delay to reduce tight handoffs between
+                      // consecutive opens (helps avoid viewer internal races)
+                      await new Promise(r => setTimeout(r, 250 + (attempt - 1) * 150))
+
+                      // Ensure the library prototype has been patched (covers logout/login remount cases)
+                      try { await ensurePdfViewerPatched({ timeout: 10000, interval: 250 }) } catch (e) { /* best-effort */ }
+
+                      // Call resourcesLoaded and handle prototype-related failures by attempting a repatch+retry
+                      let innerSucceeded = false
+                      try {
+                        await resourcesLoaded(attachmentName)
+                        innerSucceeded = true
+                      } catch (errRs) {
+                        const msg = (errRs && errRs.message) ? errRs.message : ''
+                        if (msg.includes('appendChild') || msg.includes('Cannot read properties') || msg.includes('Cannot read property')) {
+                          try { await ensurePdfViewerPatched({ timeout: 2000, interval: 100 }) } catch (e) { }
+                          try { await resourcesLoaded(attachmentName); innerSucceeded = true } catch (e2) { }
+                        }
+                      }
+
+                      if (!innerSucceeded) throw new Error('resourcesLoaded failed')
+
+                      // Allow viewer internals a short time to settle after load
+                      await new Promise(r => setTimeout(r, 220))
+                      succeeded = true
+                    } finally {
+                      attachmentLoadLockRef.current = false
+                    }
+                  } catch (e) {
+                    // exponential backoff before retry (300ms, 600ms, 1200ms, ...)
+                    const backoff = 300 * Math.pow(2, Math.max(0, attempt - 1))
+                    await new Promise(r => setTimeout(r, backoff))
+                  }
+                }
+                if (succeeded) return
+              }
+
+              // Fallback: old behavior - try robust fetch candidates then load into viewer
+              let candidates = getAttachmentCandidates(pdfFileName, file.name, file.originalName, '')
+              if (!candidates.includes(src)) candidates.unshift(src)
+              candidates = filterCandidatesToApiBaseOrigin(candidates)
 
               const res = await fetchAttachmentBlobWithCandidates(candidates)
               if (res && res.blob) {
@@ -1584,23 +2135,21 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
                   const dataUrl = await blobToBase64(res.blob)
                   await safeViewerLoad(viewer, dataUrl)
                 } catch (e) {
-                  console.warn('openAttachmentInMainViewer: failed to convert blob to data URL', e)
                   await safeViewerLoad(viewer, src)
                 }
               } else {
                 await safeViewerLoad(viewer, src)
               }
-
             } catch (e) {
-              try { await safeViewerLoad(viewer, src);} catch (err) { console.warn('Failed to load attachment into main viewer', err) }
+              try { await safeViewerLoad(viewer, src); } catch (err) { }
             }
           } else {
-            try { await safeViewerLoad(viewer, src) } catch (e) { console.warn('Failed to load attachment into main viewer (fallback)', e); try { if (viewer.load) viewer.load(src, null); else if (viewer.open) viewer.open(src) } catch (err) { console.warn('Fallback viewer.load/open also failed', err) } }
+            try { await safeViewerLoad(viewer, src) } catch (e) { try { if (viewer.load) viewer.load(src, null); else if (viewer.open) viewer.open(src) } catch (err) { } }
           }
-        } catch (e) { console.warn('Failed to load attachment into main viewer', e) }
-        setTimeout(() => { try { if (viewer && typeof viewer.resize === 'function') viewer.resize(); else window.dispatchEvent(new Event('resize')) } catch (e) { console.warn('viewer resize failed', e) } }, 250)
+        } catch (e) { }
+        setTimeout(() => { try { if (viewer && typeof viewer.resize === 'function') viewer.resize(); else window.dispatchEvent(new Event('resize')) } catch (e) { } }, 250)
       }, 120)
-    } catch (e) { console.error('openAttachmentInMainViewer error', e) }
+    } catch (e) { }
   }
 
   const persistAttachments = (list, explicitLoanId) => {
@@ -1615,26 +2164,26 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
           if (m2 && m2[1]) id = String(m2[1])
         }
       }
-      if (!id) { console.warn('persistAttachments: no loanId or numeric id found; skipping persist'); return }
-      try { sessionStorage.setItem(`attachmentsCount_${id}`, String(count)) } catch {}
-      try { localStorage.setItem(`attachmentsCount_${id}`, String(count)) } catch {}
-      try { window.dispatchEvent(new CustomEvent('attachmentsCountUpdated', { detail: { loanId: id, count } })) } catch {}
-    } catch (e) { console.error('Failed to persist attachments count', e) }
+      if (!id) { return }
+      try { sessionStorage.setItem(`attachmentsCount_${id}`, String(count)) } catch { }
+      try { localStorage.setItem(`attachmentsCount_${id}`, String(count)) } catch { }
+      try { window.dispatchEvent(new CustomEvent('attachmentsCountUpdated', { detail: { loanId: id, count } })) } catch { }
+    } catch (e) { }
   }
 
   const persistDeletedAttachments = () => {
     try {
       let docId = loanId
       if (!docId && pdfFileName) { const m = (pdfFileName.match(/(\d+)(?=\.pdf$)/) || [])[0]; if (m) docId = String(m) }
-      if (!docId) { console.warn('persistDeletedAttachments: no docId found'); return }
+      if (!docId) { return }
       const storageKey = `deletedAttachments_${docId}`
       const deletedList = Array.from(deletedAttachmentsRef.current)
-      try { localStorage.setItem(storageKey, JSON.stringify(deletedList)) } catch {}
-      try { sessionStorage.setItem(storageKey, JSON.stringify(deletedList)) } catch {}
-    } catch (e) { console.error('Failed to persist deleted attachments', e) }
+      try { localStorage.setItem(storageKey, JSON.stringify(deletedList)) } catch { }
+      try { sessionStorage.setItem(storageKey, JSON.stringify(deletedList)) } catch { }
+    } catch (e) { }
   }
 
-  useEffect(() => { try { persistAttachments(uploadedFiles) } catch (e) { console.error('persistAttachments effect error', e) } }, [uploadedFiles])
+  useEffect(() => { try { persistAttachments(uploadedFiles) } catch (e) { } }, [uploadedFiles])
 
   useEffect(() => {
     try {
@@ -1643,9 +2192,9 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
       if (docId) {
         const storageKey = `deletedAttachments_${docId}`
         const stored = localStorage.getItem(storageKey) || sessionStorage.getItem(storageKey)
-        if (stored) { try { const deletedList = JSON.parse(stored); if (Array.isArray(deletedList)) deletedAttachmentsRef.current = new Set(deletedList) } catch {} }
+        if (stored) { try { const deletedList = JSON.parse(stored); if (Array.isArray(deletedList)) deletedAttachmentsRef.current = new Set(deletedList) } catch { } }
       }
-    } catch (e) { console.error('Failed to load deleted attachments', e) }
+    } catch (e) { }
   }, [loanId, pdfFileName])
 
   useEffect(() => () => {
@@ -1686,7 +2235,7 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
       setUploadedFiles(filteredFiles)
       const derivedId = (filename && (filename.match(/(\d+)(?=\.pdf$)/) || [])[0]) || null
       persistAttachments(filteredFiles, derivedId)
-    } catch (e) { console.error('fetchServerAttachments error', e) }
+    } catch (e) { }
   }
 
   const tryParseBody = async (resp) => { try { return await resp.json() } catch { try { return await resp.text() } catch { return null } } }
@@ -1733,8 +2282,6 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
         if (resp.status !== 404) return { success: false, status: resp.status, message: data }
       } catch (err) { lastError = err }
     }
-
-    console.error('All delete attempts failed', lastError)
     return { success: false, message: lastError && (lastError.message || lastError) }
   }
 
@@ -1784,7 +2331,7 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
 
   useEffect(() => {
     const viewer = viewerRef.current
-    const adjust = () => { try { if (viewer && typeof viewer.resize === 'function') viewer.resize(); else window.dispatchEvent(new Event('resize')) } catch (e) { console.warn('viewer resize failed', e) } }
+    const adjust = () => { try { if (viewer && typeof viewer.resize === 'function') viewer.resize(); else window.dispatchEvent(new Event('resize')) } catch (e) { } }
     const t = setTimeout(adjust, 150)
     return () => clearTimeout(t)
   }, [isAttachmentOpen])
@@ -1808,7 +2355,7 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
           return
         }
         setModalSrc(null)
-      } catch (e) { console.error('Error preparing modal source', e); if (active) setModalSrc(null) }
+      } catch (e) { }
       finally { if (active) setModalLoading(false) }
     }
     prepare()
@@ -1824,7 +2371,7 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
           try { mv.destroy(); } catch (e) { /* ignore */ }
           modalViewerRef.current = null
         }
-      } catch (e) {}
+      } catch (e) { }
     }
   }, [isAttachmentViewing])
 
@@ -1857,12 +2404,12 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
         if (typeof modalSrc === 'string' && (modalSrc.startsWith('data:') || modalSrc.startsWith('blob:'))) {
           // revoke any previously-created object URL if different
           if (lastObjectUrlRef.current && lastObjectUrlRef.current !== modalSrc) {
-            try { URL.revokeObjectURL(lastObjectUrlRef.current) } catch (e) {}
+            try { URL.revokeObjectURL(lastObjectUrlRef.current) } catch (e) { }
             lastObjectUrlRef.current = null
           }
           const mv = modalViewerRef.current
           if (mv) {
-            try { await safeViewerLoad(mv, modalSrc); modalFetchDoneRef.current = true; } catch (e) { console.warn('modal viewer load error', e); setModalLoadError(true) }
+            try { await safeViewerLoad(mv, modalSrc); modalFetchDoneRef.current = true; } catch (e) { setModalLoadError(true) }
           }
           setModalLoading(false)
           return
@@ -1882,13 +2429,11 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
               const dataUrl = await blobToBase64(res.blob)
               blobUrl = dataUrl
             } catch (e) {
-              console.warn('Modal loader: failed to convert blob to data URL', e)
               // fall back to object URL if conversion fails
               if (res.blobUrl) blobUrl = res.blobUrl
             }
           }
         } catch (err) {
-          console.warn('Modal attachment fetch failed (all candidates)', err, modalSrc)
           setModalLoadError(true)
           setModalLoading(false)
           return
@@ -1899,11 +2444,10 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
 
         const mv = modalViewerRef.current
         if (mv) {
-          try { await safeViewerLoad(mv, blobUrl); modalFetchDoneRef.current = true; } catch (e) { console.warn('modal viewer load failed', e); setModalLoadError(true) }
+          try { await safeViewerLoad(mv, blobUrl); modalFetchDoneRef.current = true; } catch (e) { setModalLoadError(true) }
         }
         setModalLoading(false)
       } catch (err) {
-        console.warn('loadModalAttachment error', err)
         if (active) {
           setModalLoadError(true)
           setModalLoading(false)
@@ -1914,10 +2458,10 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
     return () => { active = false }
   }, [modalSrc, modalInstanceKey, isAttachmentViewing, viewingFile])
 
-  const closeModal = () => { setViewingFile(null); setIsAttachmentViewing(false); setModalSrc(null); setModalLoading(false); if (lastObjectUrlRef.current) { try { URL.revokeObjectURL(lastObjectUrlRef.current) } catch {} lastObjectUrlRef.current = null } }
+  const closeModal = () => { setViewingFile(null); setIsAttachmentViewing(false); setModalSrc(null); setModalLoading(false); if (lastObjectUrlRef.current) { try { URL.revokeObjectURL(lastObjectUrlRef.current) } catch { } lastObjectUrlRef.current = null } }
 
   useEffect(() => {
-    const onDocMouseDown = (e) => { try { if (!contextMenu.visible) return; if (contextMenuRef.current && !contextMenuRef.current.contains(e.target)) setContextMenu({ visible: false, x: 0, y: 0, fileId: null }) } catch {} }
+    const onDocMouseDown = (e) => { try { if (!contextMenu.visible) return; if (contextMenuRef.current && !contextMenuRef.current.contains(e.target)) setContextMenu({ visible: false, x: 0, y: 0, fileId: null }) } catch { } }
     const onDocKey = (e) => { if (e.key === 'Escape') setContextMenu({ visible: false, x: 0, y: 0, fileId: null }) }
     document.addEventListener('mousedown', onDocMouseDown)
     document.addEventListener('keydown', onDocKey)
@@ -1935,27 +2479,90 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
         if (approvalBtnRef.current && approvalBtnRef.current.contains(tgt)) return
         setShowInfoMenu(false)
         setShowApprovalMenu(false)
-      } catch (err) {}
+      } catch (err) { }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  useEffect(() => { if (!contextMenu.visible) return; const adjust = () => { try { const el = contextMenuRef.current; if (!el) return; const rect = el.getBoundingClientRect(); let newX = contextMenu.x; let newY = contextMenu.y; const margin = 8; if (rect.right > window.innerWidth) newX = Math.max(margin, window.innerWidth - rect.width - margin); if (rect.bottom > window.innerHeight) newY = Math.max(margin, window.innerHeight - rect.height - margin); if (newX !== contextMenu.x || newY !== contextMenu.y) setContextMenu(prev => ({ ...prev, x: newX, y: newY })) } catch {} }; requestAnimationFrame(adjust) }, [contextMenu.visible, contextMenu.x, contextMenu.y])
+  useEffect(() => { if (!contextMenu.visible) return; const adjust = () => { try { const el = contextMenuRef.current; if (!el) return; const rect = el.getBoundingClientRect(); let newX = contextMenu.x; let newY = contextMenu.y; const margin = 8; if (rect.right > window.innerWidth) newX = Math.max(margin, window.innerWidth - rect.width - margin); if (rect.bottom > window.innerHeight) newY = Math.max(margin, window.innerHeight - rect.height - margin); if (newX !== contextMenu.x || newY !== contextMenu.y) setContextMenu(prev => ({ ...prev, x: newX, y: newY })) } catch { } }; requestAnimationFrame(adjust) }, [contextMenu.visible, contextMenu.x, contextMenu.y])
 
   // ===== Custom Stamp → open file explorer =====
   const CUSTOM_STAMP_NAME = 'Add Attachment'
+  const selectedStampInfoRef = React.useRef(null)
   const onAnnotationSelect = React.useCallback((args) => {
     if (!args) return
+
     const shapeType = args.shapeAnnotationType || args.annotation?.shapeAnnotationType || null
     const { annotationType, annotation } = args
     const isStamp = args.annotationCollection && args.annotationCollection[0].shapeAnnotationType == 'stamp';
     if (!isStamp) return
+
     const isOurCustomStamp = annotation?.customStampName === CUSTOM_STAMP_NAME || annotation?.subject === CUSTOM_STAMP_NAME
     // if (!isOurCustomStamp) return
-    if (stampFileInputRef.current) { stampFileInputRef.current.value = ''; setTimeout(() => stampFileInputRef.current?.click(), 0) }
-    // re-evaluate fields after an annotation interaction (covers drawn signatures)
-    try { setTimeout(() => { try { evaluateFields() } catch (e) {} }, 120) } catch (e) {}
+
+
+    // ✅ ✅ NEW FIX — PREVENT SELECTION (NO FLICKER)
+    try {
+      if (args.event) {
+        args.event.preventDefault()
+        args.event.stopPropagation()
+      }
+    } catch (e) { }
+
+
+    // Capture stamp author/identifier so the file-change handler knows which field to fill
+    try {
+      let stampAuthor = null
+      try { stampAuthor = (annotation && (annotation.author || annotation.Author || annotation.subject)) || null } catch (e) { stampAuthor = null }
+      try { if (!stampAuthor && args.annotationCollection && args.annotationCollection[0]) { const a = args.annotationCollection[0]; stampAuthor = (a.author || a.Author || (a.review && a.review.author) || a.subject) || null } } catch (e) { }
+      selectedStampInfoRef.current = (stampAuthor || '').toString().toLowerCase().trim()
+    } catch (e) { selectedStampInfoRef.current = null }
+
+
+    // Open file picker for stamp
+    if (stampFileInputRef.current) {
+      stampFileInputRef.current.value = '';
+      setTimeout(() => stampFileInputRef.current?.click(), 0)
+    }
+
+
+    // ✅ ✅ NEW FIX — CLEAR IMMEDIATELY (NO DELAY BLINK)
+    try {
+      const viewer = viewerRef.current?.ej2Instances?.[0] || viewerRef.current
+
+      if (viewer?.annotation?.clearSelection) viewer.annotation.clearSelection()
+      if (viewer?.annotation?.deselect) viewer.annotation.deselect()
+      if (viewer?.clearSelection) viewer.clearSelection()
+      if (viewer?.annotationModule?.clearSelection) viewer.annotationModule.clearSelection()
+    } catch (e) { }
+
+
+    // ⛔ KEEPING YOUR EXISTING CODE (NO REMOVAL)
+    setTimeout(() => {
+      try {
+        const viewer = viewerRef.current?.ej2Instances?.[0] || viewerRef.current
+        try { if (viewer && viewer.annotation && typeof viewer.annotation.clearSelection === 'function') viewer.annotation.clearSelection() } catch (e) { }
+        try { if (viewer && viewer.annotation && typeof viewer.annotation.deselect === 'function') viewer.annotation.deselect() } catch (e) { }
+        try { if (viewer && typeof viewer.clearSelection === 'function') viewer.clearSelection() } catch (e) { }
+        try { if (viewer && viewer.annotationModule && typeof viewer.annotationModule.clearSelection === 'function') viewer.annotationModule.clearSelection() } catch (e) { }
+      } catch (e) { }
+
+      try {
+        const container = document.getElementById('container')
+        if (container) {
+          const sels = container.querySelectorAll(
+            '.e-pv-selection, .e-pv-selector, .e-pv-annotation-selection, .e-pv-selection-handle, .e-selection, .e-pv-annotation-editor, .e-pv-annotation-selector'
+          )
+          sels.forEach(el => el.remove())
+        }
+      } catch (e) { }
+    }, 120)
+
+
+    // re-evaluate fields after an annotation interaction
+    try { setTimeout(() => { try { evaluateFields() } catch (e) { } }, 120) } catch (e) { }
+
   }, [])
 
   // Stamp-exclusive onChange: also writes the file name into any matching attachment textbox
@@ -1963,22 +2570,31 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
     const files = Array.from(evt.target.files || [])
     if (!files.length) return
     const firstFile = files[0]
-    try { await handleAttach(firstFile) } catch (e) { console.warn(e) }
+    try { await handleAttach(firstFile) } catch (e) { }
     try {
       const viewer = viewerRef.current?.ej2Instances || viewerRef.current
       if (viewer && typeof viewer.retrieveFormFields === 'function') {
         const fields = viewer.retrieveFormFields() || []
         const allowed = ['aadharattach', 'panattach', 'panatatch', 'salaryattach', 'bankattach', 'drivingattach', 'passportattach']
         // determine selected stamp's author (if any) and only set field when author === field name
-        const selected = viewer.selectedItems || (viewer.annotation && viewer.annotation.selectedItems) || null
+        // Prefer captured stamp info (from onAnnotationSelect) so we don't rely on viewer.selectedItems
         let stampAuthor = null
         try {
-          if (selected && Array.isArray(selected.annotations) && selected.annotations[0]) {
-            const ann = selected.annotations[0]
-            stampAuthor = (ann.author || ann.Author || (ann.review && ann.review.author) || '')
-            stampAuthor = (stampAuthor || '').toString().toLowerCase().trim()
+          if (selectedStampInfoRef && selectedStampInfoRef.current) {
+            stampAuthor = selectedStampInfoRef.current
+            selectedStampInfoRef.current = null
           }
         } catch (e) { stampAuthor = null }
+        try {
+          if (!stampAuthor) {
+            const selected = viewer.selectedItems || (viewer.annotation && viewer.annotation.selectedItems) || null
+            if (selected && Array.isArray(selected.annotations) && selected.annotations[0]) {
+              const ann = selected.annotations[0]
+              stampAuthor = (ann.author || ann.Author || (ann.review && ann.review.author) || '')
+              stampAuthor = (stampAuthor || '').toString().toLowerCase().trim()
+            }
+          }
+        } catch (e) { stampAuthor = stampAuthor || null }
 
         // prefer the first matching empty field (and only those matching the stamp author when available), otherwise set the first matching field
         let setOn = null
@@ -1996,14 +2612,43 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
             setOn.value = firstFile.name
             if (typeof viewer.updateFormFieldsValue === 'function') viewer.updateFormFieldsValue(setOn)
             if (viewer.formDesignerModule && typeof viewer.formDesignerModule.updateFormField === 'function') viewer.formDesignerModule.updateFormField(setOn, { value: firstFile.name })
-            try { applyClickableToField(setOn.name) } catch {}
-            try { markFieldClickableByValue(firstFile.name) } catch {}
-                // NOTE: Do not call saveAttachmentToServer here. Keep attachment pending
-                // so it will be saved along with the form when the user clicks Submit.
-          } catch (err) { console.warn('Failed to update form field value', err) }
+            try { applyClickableToField(setOn.name) } catch { }
+            try { markFieldClickableByValue(firstFile.name) } catch { }
+            // NOTE: Do not call saveAttachmentToServer here. Keep attachment pending
+            // so it will be saved along with the form when the user clicks Submit.
+          } catch (err) { }
         }
       }
-    } catch (e) { console.warn('Failed to set textbox value', e) }
+    } catch (e) { }
+    // ✅ STEP 1: Clear selection once
+    setTimeout(() => {
+      try {
+        const viewer = viewerRef.current?.ej2Instances || viewerRef.current;
+
+        // ✅ Clear internal text selection
+        viewer?.textSelectionModule?.clearTextSelection?.();
+
+        // ✅ Clear annotations
+        viewer?.annotation?.clearSelection?.();
+        viewer?.annotationModule?.clearSelection?.();
+
+        // ✅ HARD reset browser selection
+        if (window.getSelection) {
+          window.getSelection().removeAllRanges();
+        }
+
+        // ✅ FORCE remove selection from DOM (THIS IS KEY)
+        const textLayers = document.querySelectorAll('.e-pv-text-layer');
+
+        textLayers.forEach(layer => {
+          layer.style.userSelect = 'none';   // disable selection
+          layer.style.webkitUserSelect = 'none';
+        });
+
+      } catch {}
+    }, 100);
+
+
     evt.target.value = ''
   }, [handleAttach])
 
@@ -2023,14 +2668,13 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
       if (!file) return null
       const viewer = viewerRef.current
       if (!viewer || typeof viewer.saveAsBlob !== 'function') {
-        console.warn('Viewer not ready to save PDF blob')
       }
 
       let pdfBase64 = null
       try {
         const blob = await viewer.saveAsBlob()
         pdfBase64 = await blobToBase64(blob)
-      } catch (e) { console.warn('Failed to get PDF blob for saveAttachmentToServer', e) }
+      } catch (e) { }
 
       const user = JSON.parse(localStorage.getItem('user') || 'null')
       const username = user?.username || user?.name || null
@@ -2048,7 +2692,6 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
       const documentId = loanId || getDocumentId(displayName || '', fileId)
       const attachmentName = (displayName && String(displayName).trim()) || file.name
       const attachmentsPayload = [{ name: attachmentName, base64: await fileToBase64(file), type: file.type || 'application/octet-stream', originalName: file.name }]
-
       const resp = await fetch(`${API_BASE}/api/Authentication/SaveFilledForms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2056,7 +2699,7 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
       })
 
       let json = null
-      try { json = await resp.json() } catch {}
+      try { json = await resp.json() } catch { }
 
       if (resp.ok) {
         try {
@@ -2072,10 +2715,10 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
               const next = (prev || []).filter(p => !savedFiles.some(sf => sf.name === p.name || sf.name === p.originalName))
               return [...next, ...savedFiles]
             })
-            try { persistAttachments(savedFiles, documentId) } catch {}
+            try { persistAttachments(savedFiles, documentId) } catch { }
             return savedFiles
           }
-        } catch (e) { console.warn('Error processing saveAttachmentToServer response', e) }
+        } catch (e) { }
         // fallback: mark matching uploadedFiles as not pending and ensure url exists
         setUploadedFiles(prev => {
           return (prev || []).map(p => {
@@ -2083,23 +2726,70 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
             return p
           })
         })
-        try { persistAttachments(uploadedFiles || [], documentId) } catch {}
+        try { persistAttachments(uploadedFiles || [], documentId) } catch { }
         return { success: true }
       } else {
-        console.error('saveAttachmentToServer failed', resp.status, json)
         return { success: false, status: resp.status, message: json }
       }
-    } catch (err) { console.error('saveAttachmentToServer error', err); return { success: false, error: err } }
+    } catch (err) { }
   }, [API_BASE, pdfFileName, role, loanStatus, count, fileToBase64, blobToBase64, getDocumentId, persistAttachments, uploadedFiles])
 
-  const openAttachmentByName = useCallback((name) => {
+  const openAttachmentByName = useCallback(async (name) => {
     if (!name) return
     const n = (name || '').toString().trim()
+
+    const tryOpenFile = async (file) => {
+      if (!file) return false
+      // If file already provides an in-memory dataUrl, open directly
+      if (file.dataUrl && typeof file.dataUrl === 'string') {
+        setViewingFile(file)
+        setIsAttachmentViewing(true)
+        return true
+      }
+
+      // If the file has an explicit URL, try to fetch it as a blob and load
+      if (file.url && typeof file.url === 'string') {
+        try {
+          // Build candidate list and fetch blob robustly if helper exists
+          const candidates = (typeof file.url === 'string' && file.url.startsWith('http'))
+            ? (typeof getAttachmentCandidates === 'function' ? getAttachmentCandidates(pdfFileName, (file.name || file.originalName || file.url.split('/').pop())) : [file.url])
+            : [file.url]
+
+          let res = null
+          if (typeof fetchAttachmentBlobWithCandidates === 'function') {
+            res = await fetchAttachmentBlobWithCandidates(candidates)
+          } else {
+            // fallback: single fetch
+            const resp = await fetch(file.url)
+            if (resp.ok) res = { blob: await resp.blob() }
+          }
+
+          if (res && res.blob) {
+            try {
+              const dataUrl = await blobToBase64(res.blob)
+              setViewingFile({ ...file, dataUrl })
+              setIsAttachmentViewing(true)
+              return true
+            } catch (e) {
+              // fall through to object URL fallback
+            }
+          }
+        } catch (e) {
+          // continue to fallback
+        }
+      }
+
+      // If we couldn't fetch a blob, still open the viewer with available metadata
+      setViewingFile(file)
+      setIsAttachmentViewing(true)
+      return true
+    }
+
+    // Exact match first
     const fileExact = findUploadedByName(n)
     if (fileExact) {
-      setViewingFile(fileExact)
-      setIsAttachmentViewing(true)
-    //   return
+      const ok = await tryOpenFile(fileExact)
+      if (ok) return
     }
 
     // tolerant matching: try contains / filename without extension matches
@@ -2112,27 +2802,27 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
         if (fn.includes(nl) || nl.includes(fn)) return true
         const strip = (s) => s.replace(/\.pdf$/i, '')
         if (strip(fn) === strip(nl)) return true
-      } catch (e) {}
+      } catch (e) { }
       return false
     })
     if (tolerant) {
-      setViewingFile(tolerant)
-      setIsAttachmentViewing(true)
-    //   return
+      const ok = await tryOpenFile(tolerant)
+      if (ok) return
     }
 
     // fallback: construct a candidate URL from server endpoint so viewer can open it
     try {
       if (pdfFileName) {
         const candidateUrl = `${API_BASE}/api/Authentication/GetPdfAttachmentFile/${encodeURIComponent(pdfFileName)}/${encodeURIComponent(n)}`
-        setViewingFile({ id: Date.now(), name: n, originalName: n, url: candidateUrl })
-        setIsAttachmentViewing(true)
-        return
+        const fileObj = { id: Date.now(), name: n, originalName: n, url: candidateUrl }
+        // attempt to fetch blob for the candidate URL as well
+        const ok = await tryOpenFile(fileObj)
+        if (ok) return
       }
     } catch (e) { /* ignore */ }
 
     alert('Attachment not found for: ' + name)
-  }, [findUploadedByName])
+  }, [findUploadedByName, uploadedFiles, pdfFileName, fetchAttachmentBlobWithCandidates, getAttachmentCandidates, blobToBase64])
 
   // Robustly mark any rendered input/textarea whose value matches `name` as clickable
   const markFieldClickableByValue = useCallback((name) => {
@@ -2160,7 +2850,7 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
                 try {
                   ev.preventDefault(); ev.stopPropagation()
                   if (typeof openAttachmentByName === 'function') openAttachmentByName(display)
-                } catch (e) {}
+                } catch (e) { }
               }
               el.addEventListener('click', handler)
               el.setAttribute('data-pdf-attachment-listener', '1')
@@ -2282,14 +2972,14 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
     const viewer = viewerRef.current?.ej2Instances || viewerRef.current
     if (!viewer) return
     // ensure the file is registered locally
-    try { await handleAttach(firstFile) } catch (e) { console.warn('handleAttach failed', e) }
+    try { await handleAttach(firstFile) } catch (e) { }
     const fields = (viewer.retrieveFormFields && viewer.retrieveFormFields()) || viewer.formFieldCollection || viewer.formFieldCollections || []
     const targetField = fields.find(f => typeof f?.name === 'string' && f.name.toLowerCase().trim() === 'textbox 5')
     if (targetField) {
       targetField.value = firstFile.name
       viewer.updateFormFieldsValue(targetField)
-      try { applyClickableToField(targetField.name) } catch {}
-      try { markFieldClickableByValue(firstFile.name) } catch {}
+      try { applyClickableToField(targetField.name) } catch { }
+      try { markFieldClickableByValue(firstFile.name) } catch { }
       // Intentionally not saving the attachment here. It will be persisted on Submit.
     }
   }, [])
@@ -2316,7 +3006,7 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
           try {
             const els = Array.from(document.querySelectorAll(sel))
             for (const el of els) {
-                try {
+              try {
                 el.classList.add('pdf-attachment-clickable')
                 el.style.cursor = 'pointer'
                 el.style.textDecoration = 'underline'
@@ -2335,9 +3025,9 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
                   el.addEventListener('click', handler)
                   el.setAttribute('data-pdf-attachment-listener', '1')
                 }
-              } catch {}
+              } catch { }
             }
-          } catch {}
+          } catch { }
         }
       }
     } catch (e) { /* silent */ }
@@ -2346,32 +3036,32 @@ candidates = filterCandidatesToApiBaseOrigin(candidates)
   // Set authors for first six custom stamp annotations when a document is loaded
   const setCustomStampAuthors = () => {
 
-   const domViewer = (typeof document !== 'undefined' && document.getElementById('container') && document.getElementById('container').ej2_instances && document.getElementById('container').ej2_instances[0]) || null
-const viewer = domViewer || viewerRef.current?.ej2Instances || viewerRef.current
-if (!viewer) return
+    const domViewer = (typeof document !== 'undefined' && document.getElementById('container') && document.getElementById('container').ej2_instances && document.getElementById('container').ej2_instances[0]) || null
+    const viewer = domViewer || viewerRef.current?.ej2Instances || viewerRef.current
+    if (!viewer) return
 
-const coll = Array.isArray(viewer.annotationCollection)
-  ? viewer.annotationCollection
-  : (typeof viewer.annotationCollection === 'function' ? viewer.annotationCollection() : (viewer.annotationCollections || []))
+    const coll = Array.isArray(viewer.annotationCollection)
+      ? viewer.annotationCollection
+      : (typeof viewer.annotationCollection === 'function' ? viewer.annotationCollection() : (viewer.annotationCollections || []))
 
-const names = ['aadharattach','panattach','salaryattach','bankattach','drivingattach','passportattach']
-const len = Math.min(coll.length, names.length)
+    const names = ['aadharattach', 'panattach', 'salaryattach', 'bankattach', 'drivingattach', 'passportattach']
+    const len = Math.min(coll.length, names.length)
 
-for (let i = 0; i < len; i++) {
-  const a = coll[i]
-  if (!a) continue
-  a.author = names[i]
-  a.Author = names[i]
-  a.review = a.review || {}
-  a.review.author = names[i]
+    for (let i = 0; i < len; i++) {
+      const a = coll[i]
+      if (!a) continue
+      a.author = names[i]
+      a.Author = names[i]
+      a.review = a.review || {}
+      a.review.author = names[i]
 
-  // notify the viewer last so it persists/renders the change
-  if (viewer && viewer.annotation && typeof viewer.annotation.editAnnotation === 'function') {
-    viewer.annotation.editAnnotation(a)
+      // notify the viewer last so it persists/renders the change
+      if (viewer && viewer.annotation && typeof viewer.annotation.editAnnotation === 'function') {
+        viewer.annotation.editAnnotation(a)
+      }
+    }
   }
-}
-  }
-   const attachmentResourcesLoaded = async (overrideName) => {
+  const attachmentResourcesLoaded = async (overrideName) => {
     try {
       if (modalFetchDoneRef.current) return;
       const mv = modalViewerRef.current
@@ -2389,7 +3079,7 @@ for (let i = 0; i < len; i++) {
             const inst = (mv && (mv.ej2Instances && mv.ej2Instances[0])) || mv.pdfViewer || mv
             const el = inst && (inst.element || mv.element || document.getElementById(`modalInnerViewer_${modalInstanceKey}`))
             if (el && document.body.contains(el)) return inst
-          } catch (e) {}
+          } catch (e) { }
           // small delay
           // eslint-disable-next-line no-await-in-loop
           await new Promise(r => setTimeout(r, 50))
@@ -2405,7 +3095,7 @@ for (let i = 0; i < len; i++) {
           else if (inst && typeof inst.open === 'function') { inst.open(src) }
           else if (typeof mv.load === 'function') { mv.load(src, null) }
           else if (typeof mv.open === 'function') { mv.open(src) }
-        } catch (e) { console.warn('attachmentResourcesLoaded: direct data/blob load failed', e) }
+        } catch (e) { }
         return
       }
 
@@ -2418,7 +3108,7 @@ for (let i = 0; i < len; i++) {
           else if (inst && typeof inst.open === 'function') inst.open(srcUrl)
           else if (typeof mv.load === 'function') mv.load(srcUrl, null)
           else if (typeof mv.open === 'function') mv.open(srcUrl)
-        } catch (e) { console.warn('attachmentResourcesLoaded: viewingFile.dataUrl load failed', e) }
+        } catch (e) { }
         return
       }
 
@@ -2448,7 +3138,7 @@ for (let i = 0; i < len; i++) {
           }
 
           if (res && (res.blob || res.blobUrl)) {
-            if (lastObjectUrlRef.current) { try { URL.revokeObjectURL(lastObjectUrlRef.current) } catch (e) {} lastObjectUrlRef.current = null }
+            if (lastObjectUrlRef.current) { try { URL.revokeObjectURL(lastObjectUrlRef.current) } catch (e) { } lastObjectUrlRef.current = null }
             // Prefer data URL (safe for viewer) created from blob
             try {
               if (res.blob) {
@@ -2468,10 +3158,10 @@ for (let i = 0; i < len; i++) {
                 else if (typeof mv.load === 'function') mv.load(res.blobUrl, null)
                 else if (typeof mv.open === 'function') mv.open(res.blobUrl)
               }
-            } catch (e) { console.warn('attachmentResourcesLoaded: blob load failed', e); setModalLoadError(true) }
+            } catch (e) { setModalLoadError(true) }
             return
           }
-        } catch (e) { console.warn('attachmentResourcesLoaded: fetch failed', e) }
+        } catch (e) { }
       }
 
       // Fallback: we were unable to obtain a blob for the remote candidate(s).
@@ -2479,51 +3169,69 @@ for (let i = 0; i < len; i++) {
       // them itself which causes the 'Failed to fetch' runtime error). Instead
       // mark a modal load error so the UI shows a friendly message.
       if (candidate) {
-        console.warn('attachmentResourcesLoaded: unable to fetch blob for candidate, aborting viewer load to avoid remote fetch', candidate)
-        try { setModalLoadError(true) } catch (e) {}
+        try { setModalLoadError(true) } catch (e) { }
         return
       }
-    } catch (e) { console.warn('attachmentResourcesLoaded error', e) }
+    } catch (e) { }
   }
 
 
   const onDocumentLoad = () => {
-    for(var i=0;i<viewerRef.current.annotationCollection.length;i++) {
-      if(viewerRef.current.annotationCollection[i].shapeAnnotationType == 'stamp') {
-      viewerRef.current.annotationCollection[i].allowedInteractions = ['Select'];
-      viewerRef.current.annotation.editAnnotation(viewerRef.current.annotationCollection[i]);
+    for (var i = 0; i < viewerRef.current.annotationCollection.length; i++) {
+      if (viewerRef.current.annotationCollection[i].shapeAnnotationType == 'stamp') {
+        // Prevent the viewer from showing selection UI for stamps — we'll handle clicks via annotationSelect
+        try { viewerRef.current.annotationCollection[i].allowedInteractions = [] } catch (e) { }
+        try { viewerRef.current.annotation.editAnnotation(viewerRef.current.annotationCollection[i]) } catch (e) { }
       }
     }
     evaluateFields()
     // delay briefly to allow the viewer to populate annotationCollection
-    try { setTimeout(() => { try { setCustomStampAuthors() } catch (e) {} }, 2000) } catch (e) {}
+    try { setTimeout(() => { try { setCustomStampAuthors() } catch (e) { } }, 2000) } catch (e) { }
     // additional re-checks to catch late-loaded signature annotations/fields
-    try { setTimeout(() => { try { evaluateFields() } catch (e) {} }, 300) } catch (e) {}
-    try { setTimeout(() => { try { evaluateFields() } catch (e) {} }, 900) } catch (e) {}
+    try { setTimeout(() => { try { evaluateFields() } catch (e) { } }, 300) } catch (e) { }
+    try { setTimeout(() => { try { evaluateFields() } catch (e) { } }, 900) } catch (e) { }
     // Ensure readonly rules are applied on every document load so applicant fields
     // (personalinfo, employmentinfo, comments, sitedate, loan officer signature)
     // are set correctly for the current role.
-   try { setTimeout(() => { try { readOnly() } catch (e) {} }, 300) } catch (e) {}
+    try { setTimeout(() => { try { readOnly() } catch (e) { } }, 300) } catch (e) { }
     MakeSignatureReadOnly()
     if (loanStatus === LoanStatus.APPROVED && sanctionMode && !pdfFileName.toLowerCase().includes('sanction')) { UpdateForm() }
-}
+  }
 
   // Show action bar for staff (Manager/Loan Officer) always; applicants only see
   // the action bar when viewing an APPROVED sanction letter.
   // Replaced the previous const showActionBar = ...
-const showActionBar = (
-  // Normal action bar when NOT approved
-  (loanStatus !== LoanStatus.APPROVED && (actionBar || role === 'Manager' || role === 'Loan Officer' || (
-    ((role !== 'Manager' && role !== 'Loan Officer')) &&
-    loanStatus === LoanStatus.APPROVED &&
-    (sanctionMode || (pdfFileName && pdfFileName.toLowerCase().includes('sanction')))
-  )))
-  ||
-  // After approval: show ONLY if sanction is open and manager signature missing (to allow Sign Request)
-  (loanStatus === LoanStatus.APPROVED &&
-   (sanctionMode || (pdfFileName && pdfFileName.toLowerCase().includes('sanction'))) &&
-   !finishEnabled)
-);
+  const showActionBar = (
+    // ❌ BLOCK completely after Site Officer verification
+    !(loanStatus === LoanStatus.SITE_VERIFIED && role !== 'Loan Officer')
+
+    &&
+
+    (
+      // Normal flow
+      (loanStatus !== LoanStatus.APPROVED &&
+        (actionBar ||
+          role === 'Manager' ||
+          role === 'Loan Officer' ||
+          ((role !== 'Manager' && role !== 'Loan Officer') &&
+            loanStatus === LoanStatus.APPROVED &&
+            (sanctionMode ||
+              (pdfFileName && pdfFileName.toLowerCase().includes('sanction')))
+          )
+        )
+      )
+
+      ||
+
+      // Approved + sanction flow
+      (loanStatus === LoanStatus.APPROVED &&
+        (sanctionMode ||
+          (pdfFileName && pdfFileName.toLowerCase().includes('sanction')))
+        && !finishEnabled
+      )
+    )
+  );
+
 
 
   // Final guard: Applicant in APPROVED -> lock all fields, but keep attachment placeholders editable
@@ -2533,38 +3241,45 @@ const showActionBar = (
       const roleLower = (role || '').toString().toLowerCase()
       const isStaff = roleLower.includes('manager') || roleLower.includes('loanofficer') || roleLower.includes('loan officer')
       if (isStaff) return
-      const alwaysEditable = new Set(['aadharattach','panattach','panatatch','salaryattach','bankattach','drivingattach','passportattach'])
+      const alwaysEditable = new Set(['aadharattach', 'panattach', 'panatatch', 'salaryattach', 'bankattach', 'drivingattach', 'passportattach'])
       const run = () => {
         try {
           const v = viewerRef.current; if (!v) return
           const getter = v.retrieveFormFields || (v.pdfViewer && v.pdfViewer.retrieveFormFields)
           const forms = (getter && getter.call(v)) || []
-          for (let i=0;i<forms.length;i++) {
-            try { const f = forms[i]; const nm = ((f.name || f.fieldName || '') + '').toLowerCase(); const editable = alwaysEditable.has(nm); if (v.formDesignerModule && typeof v.formDesignerModule.updateFormField === 'function') v.formDesignerModule.updateFormField(f, { isReadOnly: !editable }); else f.isReadOnly = !editable } catch (e) {}
+          for (let i = 0; i < forms.length; i++) {
+            try { const f = forms[i]; const nm = ((f.name || f.fieldName || '') + '').toLowerCase(); const editable = alwaysEditable.has(nm); if (v.formDesignerModule && typeof v.formDesignerModule.updateFormField === 'function') v.formDesignerModule.updateFormField(f, { isReadOnly: !editable }); else f.isReadOnly = !editable } catch (e) { }
           }
           const fdm = v.formDesignerModule
           if (fdm && typeof fdm.updateFormField === 'function' && !fdm.__wrappedApplicantApproved) {
             const orig = fdm.updateFormField.bind(fdm)
-            fdm.updateFormField = function(field, opts) {
-              try { const nm = (((field||{}).name || (field||{}).fieldName || '') + '').toLowerCase(); const editable = alwaysEditable.has(nm); const ro = !editable; if (!opts) opts = { isReadOnly: ro }; else opts.isReadOnly = ro } catch (e) {}
+            fdm.updateFormField = function (field, opts) {
+              try { const nm = (((field || {}).name || (field || {}).fieldName || '') + '').toLowerCase(); const editable = alwaysEditable.has(nm); const ro = !editable; if (!opts) opts = { isReadOnly: ro }; else opts.isReadOnly = ro } catch (e) { }
               try { return orig(field, opts) } catch (e) { return undefined }
             }
             fdm.__wrappedApplicantApproved = true
           }
           if (typeof v.updateFormFieldsValue === 'function' && !v.updateFormFieldsValue.__wrappedApplicantApproved) {
             const origUF = v.updateFormFieldsValue.bind(v)
-            const w = function(arg) { let r; try { r = origUF(arg) } catch (e) {}; try { run() } catch (e) {}; return r }
+            const w = function (arg) { let r; try { r = origUF(arg) } catch (e) { }; try { run() } catch (e) { }; return r }
             w.__wrappedApplicantApproved = true
             v.updateFormFieldsValue = w
           }
-        } catch (e) {}
+        } catch (e) { }
       }
       run()
       let ticks = 0
-      const id = setInterval(() => { try { run() } catch (e) {} if (++ticks > 12) { try { clearInterval(id) } catch (e) {} } }, 250)
-      return () => { try { clearInterval(id) } catch (e) {} }
-    } catch (e) {}
+      const id = setInterval(() => { try { run() } catch (e) { } if (++ticks > 12) { try { clearInterval(id) } catch (e) { } } }, 250)
+      return () => { try { clearInterval(id) } catch (e) { } }
+    } catch (e) { }
   }, [role, loanStatus, pdfFileName])
+
+  useEffect(() => {
+    if (loanStatus === LoanStatus.SIGN_REQUIRED ||
+      loanStatus === LoanStatus.PENDING_APPROVAL) {
+      setSignRequested(true);
+    }
+  }, [loanStatus]);
 
   return (
     <div className="pdf-root">
@@ -2585,6 +3300,7 @@ const showActionBar = (
             className="pdf-component"
             documentLoad={onDocumentLoad}
             enableLocalStorage={true}
+            enableAnnotation={true}
             formFieldPropertiesChange={onFormFieldPropertiesChange}
             resourcesLoaded={resourcesLoaded}
             downloadStart={downloadStart}
@@ -2595,86 +3311,94 @@ const showActionBar = (
           </PdfViewerComponent>
 
           {
-showActionBar && (
+            showActionBar && (
 
-            <div className="pdf-actionbar">
-              <div className="pdf-actionbar-inner">
-                {role === 'Manager' && (
-                  <>
-                    {!sanctionMode ? (
+              <div className="pdf-actionbar">
+                <div className="pdf-actionbar-inner">
+                  {role === 'Manager' && (
+                    loanStatus === LoanStatus.PENDING_APPROVAL ||
+                    (loanStatus === LoanStatus.APPROVED && sanctionMode)
+                  ) && (
+
                       <>
-                        <button className={`button pdf-action-button reject`} onClick={handleReject}>Reject</button>
-                        <button className={`button pdf-action-button approve ${showBtn ? 'enabled' : 'disabled'}`} disabled={!showBtn || loanStatus === LoanStatus.REJECTED} onClick={handleApproval}>Approval</button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          className={`button pdf-action-button request ${(signRequestEnabled && loanStatus !== LoanStatus.SIGN_REQUIRED) ? 'enabled' : 'disabled'}`}
-                          onClick={handleSignRequest}
-                          disabled={!(signRequestEnabled && loanStatus !== LoanStatus.SIGN_REQUIRED)}
-                        >
-                          Sign Request
-                        </button>
-                        <button className={`button pdf-action-button final`} onClick={handleFinish} disabled={!finishEnabled}>Finish</button>
+                        {!sanctionMode ? (
+                          <>
+                            <button className={`button pdf-action-button reject`} onClick={handleReject}>Reject</button>
+                            <button className={`button pdf-action-button approve ${showBtn ? 'enabled' : 'disabled'}`} disabled={!showBtn || loanStatus === LoanStatus.REJECTED} onClick={handleApproval}>Approval</button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              className={`pdf-action-button request ${canEnableSign ? 'enabled' : 'disabled'}`} onClick={handleSignRequest}
+                              disabled={!canEnableSign}
+                            >
+                              Sign Request
+                            </button>
+
+
+                            <button className={`button pdf-action-button final`} onClick={handleFinish} disabled={!finishEnabled}>Finish</button>
+                          </>
+                        )}
                       </>
                     )}
-                  </>
-                )}
 
-                {role === 'Loan Officer' && (
-                  <>
-                    <button className={`button pdf-action-button reject`} onClick={handleReject}>Reject</button>
+                  {role === 'Loan Officer' && (
+                    <>
+                      <button className={`button pdf-action-button reject`} onClick={handleReject}>Reject</button>
 
-                    <div style={{ position: 'relative', display: 'inline-block', marginLeft: 8 }}>
-                      <button ref={infoBtnRef} className={`button pdf-action-button request`} disabled={loanStatus === LoanStatus.REJECTED} onClick={() => { setShowInfoMenu(v => !v); setShowApprovalMenu(false) }}>Info Required <span className="caret">▾</span></button>
-                      {showInfoMenu && (
-                        <div ref={infoMenuRef} style={{ position: 'absolute', bottom: 58, left: 0, zIndex: 1400, background: '#fff', boxShadow: '0 6px 18px rgba(0,0,0,0.12)', borderRadius: 6, minWidth: 180 }}>
-                          <div style={{ padding: 8, cursor: 'pointer', borderBottom: '1px solid #eee' }} onClick={() => handleInfoChoice('need_clarification')}>Need clarification</div>
-                          <div style={{ padding: 8, cursor: 'pointer' }} onClick={() => handleInfoChoice('attachment_missing')}>Attachment missing</div>
-                        </div>
-                      )}
-                    </div>
+                      <div style={{ position: 'relative', display: 'inline-block', marginLeft: 8 }}>
+                        <button ref={infoBtnRef} className={`button pdf-action-button request`} disabled={loanStatus === LoanStatus.REJECTED} onClick={() => { setShowInfoMenu(v => !v); setShowApprovalMenu(false) }}>Info Required <span className="caret">▾</span></button>
+                        {showInfoMenu && (
+                          <div ref={infoMenuRef} style={{ position: 'absolute', bottom: 58, left: 0, zIndex: 1400, background: '#fff', boxShadow: '0 6px 18px rgba(0,0,0,0.12)', borderRadius: 6, minWidth: 240, }}>
+                            <div className="menu-item" role="menuitem" tabIndex={0} style={{ padding: '10px 16px', letterSpacing: '0.8px', cursor: 'pointer', borderBottom: '1px solid #eee' }} onClick={() => handleInfoChoice('need_clarification')} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleInfoChoice('need_clarification') } }}>Need clarification</div>
+                            <div className="menu-item" role="menuitem" tabIndex={0} style={{
+                              padding: '10px 16px',
+                              letterSpacing: '0.8px', cursor: 'pointer'
+                            }} onClick={() => handleInfoChoice('attachment_missing')} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleInfoChoice('attachment_missing') } }}>Attachment missing</div>
+                          </div>
+                        )}
+                      </div>
 
-                    <div style={{ position: 'relative', display: 'inline-block', marginLeft: 8 }}>
-                      <button ref={approvalBtnRef} className={`button pdf-action-button final ${showBtn ? 'enabled' : 'disabled'}`} disabled={!showBtn} onClick={() => { setShowApprovalMenu(v => !v); setShowInfoMenu(false) }}>Approval <span className="caret">▾</span></button>
-                      {showApprovalMenu && (
-                        <div ref={approvalMenuRef} style={{ position: 'absolute', bottom: 58, left: 0, zIndex: 1400, background: '#fff', boxShadow: '0 6px 18px rgba(0,0,0,0.12)', borderRadius: 6, minWidth: 200 }}>
-                          {(() => {
-                            const canSendToSite = loanStatus !== LoanStatus.SITE_VERIFIED
-                            return (
-                              <div
-                                title={canSendToSite ? 'Send to Site Officer' : 'Disabled — already site verified'}
-                                style={{ padding: 8, cursor: canSendToSite ? 'pointer' : 'not-allowed', borderBottom: '1px solid #eee', color: canSendToSite ? '#000' : '#999' }}
-                                onClick={() => { if (!canSendToSite) return; handleApprovalChoice('send_to_site') }}
-                              >
-                                Send to Site Officer
-                              </div>
-                            )
-                          })()}
-                          {(() => {
-                            const canApproveNow = isLoanOfficerSignatureFilled()
-                            return (
-                              <div
-                                title={canApproveNow ? 'Approve application' : 'Approve requires Loan Officer signature'}
-                                style={{ padding: 8, cursor: canApproveNow ? 'pointer' : 'not-allowed', color: canApproveNow ? '#000' : '#999' }}
-                                onClick={() => { handleApprovalChoice('approved') }}
-                              >
-                                Approved
-                              </div>
-                            )
-                          })()}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
+                      <div style={{ position: 'relative', display: 'inline-block', marginLeft: 8 }}>
+                        <button ref={approvalBtnRef} className={`button pdf-action-button final ${showBtn ? 'enabled' : 'disabled'}`} disabled={!showBtn} onClick={() => { setShowApprovalMenu(v => !v); setShowInfoMenu(false) }}>Approval <span className="caret">▾</span></button>
+                        {showApprovalMenu && (
+                          <div ref={approvalMenuRef} style={{ position: 'absolute', bottom: 58, left: 0, zIndex: 1400, background: '#fff', boxShadow: '0 6px 18px rgba(0,0,0,0.12)', borderRadius: 6, minWidth: 200 }}>
+                            {(() => {
+                              const canSendToSite = loanStatus !== LoanStatus.SITE_VERIFIED
+                              return (
+                                <div
+                                  title={canSendToSite ? 'Send to Site Officer' : 'Disabled — already site verified'}
+                                  style={{ padding: 8, cursor: canSendToSite ? 'pointer' : 'not-allowed', borderBottom: '1px solid #eee', color: canSendToSite ? '#000' : '#999' }}
+                                  onClick={() => { if (!canSendToSite) return; handleApprovalChoice('send_to_site') }}
+                                >
+                                  Send to Site Officer
+                                </div>
+                              )
+                            })()}
+                            {(() => {
+                              const canApproveNow = isLoanOfficerSignatureFilled()
+                              return (
+                                <div
+                                  title={canApproveNow ? 'Approve application' : 'Approve requires Loan Officer signature'}
+                                  style={{ padding: 8, cursor: canApproveNow ? 'pointer' : 'not-allowed', color: canApproveNow ? '#000' : '#999' }}
+                                  onClick={() => { handleApprovalChoice('approved') }}
+                                >
+                                  Approved
+                                </div>
+                              )
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
 
-               {(role !== 'Manager' && role !== 'Loan Officer' && loanStatus !== LoanStatus.INFO_UPDATED && loanStatus !== LoanStatus.APPROVED) && (
-                  <button className={`button pdf-action-button approve ${canSubmit ? 'enabled' : 'disabled'}`} disabled={!canSubmit} onClick={() => canSubmit && handleSubmit()}>Submit</button>
-                )}
+                  {(role !== 'Manager' && role !== 'Loan Officer' && loanStatus !== LoanStatus.INFO_UPDATED && loanStatus !== LoanStatus.APPROVED) && (
+                    <button className={`button pdf-action-button approve ${canSubmit ? 'enabled' : 'disabled'}`} disabled={!canSubmit} onClick={() => canSubmit && handleSubmit()}>Submit</button>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
         </div>
 
         {isAttachmentOpen && (
@@ -2720,17 +3444,25 @@ showActionBar && (
       {contextMenu.visible && (
         <div ref={contextMenuRef} onMouseDown={(e) => e.stopPropagation()} style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 2000, background: '#fff', boxShadow: '0 6px 18px rgba(0,0,0,0.12)', borderRadius: 6, minWidth: 160, padding: '6px 0' }}>
           <div
+            className="menu-item"
             title={canManageAttachments ? 'Add attachment' : 'Adding attachments is disabled'}
+            role="menuitem"
+            tabIndex={0}
             style={{ padding: '8px 14px', cursor: canManageAttachments ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', opacity: canManageAttachments ? 1 : 0.5 }}
             onClick={(ev) => { ev.stopPropagation(); setContextMenu({ visible: false, x: 0, y: 0, fileId: null }); if (canManageAttachments) handleOpenFile() }}
+            onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); setContextMenu({ visible: false, x: 0, y: 0, fileId: null }); if (canManageAttachments) handleOpenFile() } }}
           >
             <span style={{ marginRight: 8 }} className="e-icons e-plus" /> Add Attachment
           </div>
           {contextMenu.fileId != null && (
             <div
+              className="menu-item"
               title={canManageAttachments ? 'Delete attachment' : 'Deleting attachments is disabled'}
+              role="menuitem"
+              tabIndex={0}
               style={{ padding: '8px 14px', cursor: canManageAttachments ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', opacity: canManageAttachments ? 1 : 0.5 }}
               onClick={(ev) => { ev.stopPropagation(); const id = contextMenu.fileId; setContextMenu({ visible: false, x: 0, y: 0, fileId: null }); if (canManageAttachments && typeof handleRemoveFile === 'function') handleRemoveFile(id) }}
+              onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); const id = contextMenu.fileId; setContextMenu({ visible: false, x: 0, y: 0, fileId: null }); if (canManageAttachments && typeof handleRemoveFile === 'function') handleRemoveFile(id) } }}
             >
               <span style={{ marginRight: 8 }} className="e-icons e-trash" /> Delete
             </div>
@@ -2773,9 +3505,10 @@ showActionBar && (
                         enableToolbar={true}
                         enableNavigationToolbar={true}
                         enableLocalStorage={true}
-                         resourcesLoaded={attachmentResourcesLoaded}
+                        enableAnnotation={true}
+                        resourcesLoaded={attachmentResourcesLoaded}
                         style={{ width: '100%', height: '100%' }}
-                        toolbarSettings={{ showTooltip: true, toolbarItems: ['PageNavigationTool','MagnificationTool','SearchOption','DownloadOption'], showToolbar: true }}
+                        toolbarSettings={{ showTooltip: true, toolbarItems: ['PageNavigationTool', 'MagnificationTool', 'SearchOption', 'DownloadOption'], showToolbar: true }}
                       >
                         <Inject services={[Toolbar, Magnification, Navigation, Annotation, LinkAnnotation, BookmarkView, ThumbnailView, Print, TextSelection, TextSearch, FormFields, FormDesigner]} />
                       </PdfViewerComponent>

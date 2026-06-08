@@ -3,7 +3,7 @@
   /* deep purple gradient */
   color: #ffffff;
   padding: 18px 20px;
-  border-radius: 8px;
+  border-radius: 0 !important;
   box-shadow: 0 4px 18px rgba(2, 6, 23, 0.18);
   margin-bottom: 18px;
 
@@ -20,19 +20,13 @@
 
 }
 
-.loandetails-header {
-  background: #ffffff;
-  color: #0f172a;
-  /* tighter header padding for compact layout */
-  padding: 12px 20px;
-  border: 1px solid #e6eef8;
+/* Ensure the right-side header controls (Create/Logout) sit inline */
+.dashboard > div:last-child {
   display: flex;
+  gap: 8px;
   align-items: center;
-  justify-content: space-between;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(2, 6, 23, 0.04);
-  margin-bottom: 12px;
 }
+
 
 /* Container that wraps loan details (table + header) */
 .loandetails-container {
@@ -42,20 +36,25 @@
 
 /* Table / grid spacing under the header */
 .loandetails-table {
-
-  border-collapse: collapse;
-  margin: 8px 10px 0 10px;
-  /* top:8px, left/right:10px to match header */
-  box-sizing: border-box;
+  width: 100%;
+  border-collapse: separate;   /* ✅ FIX */
+  border-spacing: 0;
+  table-layout: fixed;
 }
-
+.loandetails-table thead th {
+  position: sticky;
+  top: 0;              /* ✅ stick inside tableWrap */ /* ✅ same blue as your header */
+  z-index: 50;         /* ✅ higher than rows */
+}
+.loandetails-table th {
+  position: sticky;
+  top: 0;
+  background: #ffffff;
+  z-index: 20;   /* increase slightly */
+}
 .loandetails-table th,
 .loandetails-table td {
-  padding: 8px 12px;
-  /* tighter cell padding */
-  text-align: left;
-  border-bottom: 1px solid #eef2f7;
-  color: #374151;
+  padding: 12px 12px;   /* ✅ increased vertical spacing */
 }
 
 /* Utility: make header text stand out */
@@ -65,7 +64,26 @@
   letter-spacing: 0.2px;
   font-weight: bold;
 }
+.loandetails-header {
+  background: #ffffff;
+  color: #0f172a;
+  padding: 12px 20px;
+  border: 1px solid #e6eef8;
+  
+  /* ✅ ADD THIS LINE */
+  border-bottom: 2px solid #d1d5db;
 
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 0 !important;
+  box-shadow: 0 1px 4px rgba(2, 6, 23, 0.04);
+  margin-bottom: 12px;
+
+  position: sticky;
+  top: 70px;
+  z-index: 900;
+}
 /* Make buttons consistent when using classes or inline styles */
 .button-primary {
   background: #0b5cff;
@@ -146,9 +164,6 @@
   }
 
   /* reduce the inset for the framed table area on medium/smaller screens */
-  .frame {
-    margin: 0 12px;
-  }
 }
 
 @media (max-width: 640px) {
@@ -167,6 +182,28 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 4px;
+}
+
+/* Viewer header: align title + status chip */
+.pdf-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+ 
+ background: linear-gradient(90deg, #5b21b6, #7c3aed);
+  color: #ffffff;   /* ✅ makes text inherit white */
+
+  border-bottom: 1px solid #eef2f7;
+}
+.pdf-title-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pdf-status {
+  display: inline-flex;
+  align-items: center;
 }
 
 .viewer-close-btn,
@@ -198,48 +235,84 @@
   font-size: 16px;
   font-weight: 700;
   line-height: 1;
-  border: 2px solid #0b1f5e;
+  border: none;
   border-radius: 8px;
   background: #fff;
   color: #0b1f5e;
   cursor: pointer;
 }
 
-.frame {
-  box-sizing: border-box;
-  border: 1px solid #d1d5db;
+/* Header button: primary flat (Create) */
+.header-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #ffffff;
+  box-shadow: none;
+  cursor: pointer;
+}
+.header-primary:hover {
+  background: rgba(255,255,255,0.06);
+}
 
-  border-radius: 1px;
-  background: #fff;
-  /* inset the table area from the page edges while keeping the header full width */
-  margin: 0 24px;
+/* Header button: ghost/outline (Logout) */
+.header-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 12px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: 20px;
+  background: #ffffff;
+  color: #0b1f5e;
+  border: 1px solid rgba(99,102,241,0.18);
+  box-shadow: 0 2px 6px rgba(2,6,23,0.06);
+  cursor: pointer;
+}
+.header-ghost:hover { background: #fbfbfe; }
+
+
+.viewBtn {
+  padding: 6px 12px;
+  border: none;
+  background: #e5e7eb;   /* ✅ grey background always visible */
+  cursor: pointer;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+
+/* ✅ Soft grey hover (recommended) */
+.viewBtn:hover {
+  background: #f3f4f6;   /* light grey */
+}
+
+.frame {
+  height: calc(100vh - 150px);
   display: flex;
   flex-direction: column;
-  /* allow the table area to scroll within the available viewport height */
-  max-height: calc(100vh - 200px);
+  overflow: hidden;
 }
 
 .tableWrap {
-  width: 100%;
-  max-width: 100%;
+  flex: 1;           /* ✅ REQUIRED */
+  overflow-y: auto;  /* ✅ vertical scroll */
   overflow-x: auto;
-  /* allow table content to scroll horizontally inside this box */
-  overflow-y: auto;
-  /* allow vertical scrolling when rows exceed available space */
-  max-height: 100%;
-  padding: 0 6px;
-  /* small internal padding, keep scroll area inside container */
-  box-sizing: border-box;
 }
-
-.tableWrap::-webkit-scrollbar {
-  height: 10px;
-}
-
-.tableWrap::-webkit-scrollbar-thumb {
-  background: rgba(0,0,0,0.15);
-  border-radius: 6px;
-}
+.tableWrap::-webkit-scrollbar { display: none !important; height: 0 !important; }
+.tableWrap::-webkit-scrollbar-track { background: transparent !important; height: 0 !important; }
+.tableWrap::-webkit-scrollbar-thumb { background: transparent !important; border-radius: 6px; }
 
 .loandetails-table {
   width: 100%;
@@ -281,24 +354,42 @@
 }
 
 /* Comments column: allow wrapping and take remaining space */
-.commentsCol {
-  text-align: left;
-  white-space: normal;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-  padding-right: 12px;
+td.commentsCol,
+th.commentsCol {
+  position: relative;
+  left: 100px;   /* ✅ move entire column right */
 }
 
 /* Status column: wider and left-aligned to avoid overlap with action buttons */
 .statusCol {
-  width: 200px;
-  min-width: 140px;
-  max-width: 320px;
-  text-align: left;
-  padding-left: 12px;
+  width: 180px !important;
+  min-width: 160px;
+  max-width: 220px;
+  text-align: center;           /* ✅ MAIN FIX */
+  vertical-align: middle;
+}
+
+.statusCol .status-chip {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.nameCol {
+  width: 200px !important;   /* reduce this */
+}
+
+/* Make Application Name (col 2) and Status (col 3) equal-width and clamp overflow */
+.loandetails-table th:nth-child(2),
+.loandetails-table td:nth-child(2),
+.loandetails-table th:nth-child(3),
+.loandetails-table td:nth-child(3) {
+  width: 180px !important;
+  max-width: 180px !important;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  padding-right: 6px;
 }
 
 .td.statusCol {
@@ -310,9 +401,9 @@
   padding-right: 8px;
 }
 
-.viewBtn {
+/* .viewBtn {
   margin-left: 6px;
-}
+} */
 
 .emptyCell {
   padding: 16px;
@@ -320,14 +411,147 @@
   color: #666;
 }
 
-.viewBtn {
-  padding: 6px 10px;
-  border: 1px solid #000;
-  background: #fff;
-  cursor: pointer;
-  border-radius: 4px;
-}
-
 .attachCount {
   color: #374151;
+}
+
+.actionCol {
+  width: 140px;
+}
+
+/* Status chips (compact pill badges shown in Status column) */
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.status-chip .chip-icon {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 50%;
+  display: none;
+
+  /* ✅ VERY IMPORTANT: remove all old SVGs */
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+
+
+/* ✅ FIXED */
+
+/* ✅ NEW (make it like COMPLETE style) */
+.status-chip.new {
+  background: #e0ecff;
+  color: #1d4ed8;
+  border: 1px solid #60a5fa;
+}
+
+.status-chip.new::before {
+  content: "●";
+  font-size: 10px;
+  margin-right: 6px;
+  color: #1d4ed8;
+}
+
+.status-chip.inprogress::before {
+  content: "⏳";
+  font-size: 12px;
+  margin-right: 6px;
+}
+
+.status-chip.inprogress .chip-icon {
+  background: #f59e0b;  /* 🟡 amber dot */
+}
+
+.status-chip.complete {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #86efac;
+}
+
+.status-chip.complete::before {
+  content: "✔";
+  font-size: 12px;
+  margin-right: 6px;
+  color: #16a34a;
+}
+
+
+.status-chip.pending {
+  background: #ffedd5;
+  color: #c2410c;
+  border: 1px solid #fdba74;
+}
+
+.status-chip.pending::before {
+  content: "●";
+  font-size: 10px;
+  margin-right: 6px;
+  color: #f97316;
+}
+
+.status-chip.rejected {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+
+.status-chip.rejected::before {
+  content: "✖";
+  font-size: 12px;
+  margin-right: 6px;
+  color: #ef4444;
+}
+
+
+.status-chip.inprogress .chip-icon,
+.status-chip.complete .chip-icon,
+.status-chip.pending .chip-icon,
+.status-chip.rejected .chip-icon { background-color: transparent; }
+
+/* .status-chip .chip-icon {
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,0.12);
+}
+
+/* Icon backgrounds (SVG data-URI) for chip variants */
+.status-chip .chip-icon {
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 12px 12px;
+} */
+.pdf-close {
+  color: #ffffff !important;   /* ✅ MAKE WHITE */
+}
+.status-chip.inprogress .chip-icon {
+  /* clock icon - orange */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='10' fill='%23f97316'/><path d='M12.5 7v6l4 2' stroke='%23fff' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' fill='none'/></svg>");
+}
+
+.status-chip.new .chip-icon {
+  /* hollow circle icon - blue outline */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='9' fill='none' stroke='%23dbeafe' stroke-width='2'/></svg>");
+}
+
+.status-chip.complete .chip-icon {
+  /* double check icon - indigo */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M21 7L9 19l-5-5' fill='none' stroke='%231e40af' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/><path d='M17 7L7 17' fill='none' stroke='%231e40af' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+}
+
+.status-chip.pending .chip-icon {
+  /* dot-in-circle icon - yellow */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='9' fill='none' stroke='%23f59e0b' stroke-width='1.6'/><circle cx='12' cy='12' r='3' fill='%23f59e0b'/></svg>");
+}
+
+.status-chip.rejected .chip-icon {
+  /* cross icon - red */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><line x1='6' y1='6' x2='18' y2='18' stroke='%23ef4444' stroke-width='1.8' stroke-linecap='round'/><line x1='18' y1='6' x2='6' y2='18' stroke='%23ef4444' stroke-width='1.8' stroke-linecap='round'/></svg>");
 }

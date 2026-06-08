@@ -1,20 +1,22 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import Authentication from './Authentication';
+import Authentication from './Authentication.jsx';
 import './DashBoard.css'
 import PdfViewer from './PdfViewer.jsx'
 import { LoanStatus } from './constants/loanStatus.js'
 const DashBoard = () => {
   const [loggedInUser, setUser] = useState(null);
   const [rows, setRows] = useState([]);
+
   const [nextId, setNextId] = useState(() => {
     try {
       const v = sessionStorage.getItem('nextId');
-      return v ? Number(v) : 1001;
+      return v ? Number(v) : 1003;
     } catch (e) {
-      return 1001;
+      return 1003;
     }
   });
+
   const [viewerMode, setViewerMode] = useState(false);
   const [loanStatus, setLoanStatus] = useState("");
   const [pdfFileName, setPdfFileName] = useState("Loan_Application_Form");
@@ -33,7 +35,7 @@ const DashBoard = () => {
   }
   const persistComment = (documentId, fileName, commentText) => {
     try {
-      const id = documentId ? String(documentId) : ((fileName && (fileName.match(/(\d+)(?=\.pdf$)/) ?? [] )[0]) ?? null)
+      const id = documentId ? String(documentId) : ((fileName && (fileName.match(/(\d+)(?=\.pdf$)/) ?? [])[0]) ?? null)
       if (!id) return
       const all = getPersistedComments()
       all[String(id)] = { comment: commentText, fileName: fileName }
@@ -103,10 +105,10 @@ const DashBoard = () => {
         if (existsById || existsByFile) return prev;
         return [
           ...prev,
-          { id: createdId, customer: displayName, status: LoanStatus.NEW, comments: 'A new loan application has been created.', viewText: 'View', fileName: rawName }
+          { id: createdId, customer: displayName, status: LoanStatus.NEW, comments: 'A new loan application has been created — awaiting Loan Officer review', viewText: 'View', fileName: rawName }
         ];
       });
-      try { persistComment(createdId, rawName, 'A new loan application has been created.') } catch (e) { }
+      try { persistComment(createdId, rawName, 'A new loan application has been created — awaiting Loan Officer review') } catch (e) { }
     }
     prevNextId.current = nextId;
   }, [nextId, pdfFileName, loanStatus]);
@@ -117,13 +119,14 @@ const DashBoard = () => {
         const user = loggedInUser ?? JSON.parse(localStorage.getItem("user") ?? "null");
         const username = user?.username ?? user?.name ?? user?.id ?? user?.userId;
         if (!username) return;
-        const base = process.env.REACT_APP_API_URL ?? 'http://localhost:5063';
+        // const base = 'http://localhost:5063';
+        const base = "https://livedocumentsdkapp.azurewebsites.net/web-services/loan-processing/api/loan-processing-service";
         const ts = Date.now(); // cache-buster
         const url = isPrivileged(user)
           ? `${base}/api/Authentication/GetUserFiles?username=ALL&_ts=${ts}`
           : `${base}/api/Authentication/GetUserFiles?username=${encodeURIComponent(username)}&_ts=${ts}`;
         const resp = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
-        if (!resp.ok) { console.warn('GetUserFiles failed', resp.status); return; }
+        if (!resp.ok) { return; }
         const list = await resp.json();
         if (!Array.isArray(list)) return;
         list.reverse();
@@ -148,7 +151,7 @@ const DashBoard = () => {
             return { ...m, comments: (persistedComment ?? m.comments ?? (existing && existing.comments) ?? '') };
           });
         });
-      } catch (e) { console.warn("loadSavedFiles error", e); }
+      } catch (e) { }
     };
     loadSavedFiles();
     const handler = () => loadSavedFiles();
@@ -172,7 +175,7 @@ const DashBoard = () => {
             const rCust = (r.customer ?? '').toString().trim();
             if ((documentId && rid === documentId)
               || (fileName && (norm(rFile) === norm(fileName)
-              || norm(rCust) === norm(fileName)))) {
+                || norm(rCust) === norm(fileName)))) {
               return { ...r, comments: commentText };
             }
             return r;
@@ -180,9 +183,9 @@ const DashBoard = () => {
           // Robust match: compare by id OR normalized file name (ignoring .pdf)
           const matched = next.some(r => ((documentId && String(r.id) === documentId)
             || (fileName && (norm(r.fileName) === norm(fileName)
-            || norm(r.customer) === norm(fileName)))))
+              || norm(r.customer) === norm(fileName)))))
           if (!matched) {
-            const newId = documentId ?? String((fileName && (fileName.match(/(\d+)(?=\.pdf$)/) ?? [] )[0]) ?? Date.now());
+            const newId = documentId ?? String((fileName && (fileName.match(/(\d+)(?=\.pdf$)/) ?? [])[0]) ?? Date.now());
             const rawName = fileName ?? `Loan_Application_Form_${newId}`;
             const displayName = rawName.replace(/\.pdf$/i, '');
             const added = { id: String(newId), customer: displayName, status: LoanStatus.NEW, comments: commentText, viewText: 'View', fileName: rawName }
@@ -215,13 +218,66 @@ const DashBoard = () => {
     setViewerMode(true);
     setSelectedLoanId(String(row?.id ?? ''));
     if (canonicalRole === 'Loan Officer' && row?.status === LoanStatus.NEW) {
-      setLoanStatus(LoanStatus.UNDER_REVIEW);
+      const newStatus = LoanStatus.UNDER_REVIEW;
+
+      // ✅ update viewer state
+      setLoanStatus(newStatus);
+
+      // ✅ ✅ IMPORTANT: update dashboard rows (THIS WAS MISSING)
+      setRows(prev =>
+        prev.map(r =>
+          String(r.id) === String(row.id)
+            ? {
+              ...r,
+              status: newStatus,
+              comments: 'Loan application is under review by Loan Officer'
+            }
+            : r
+        )
+      );
+
+      // ✅ dispatch comment event (so UI syncs everywhere)
+      try {
+        window.dispatchEvent(new CustomEvent('loanCommentAdded', {
+          detail: {
+            documentId: row.id,
+            fileName: row.fileName,
+            username: loggedInUser?.username,
+            comments: 'Loan application is under review by Loan Officer'
+          }
+        }));
+      } catch (e) { }
     }
     const clickedName = (row && row.customer) ? String(row.customer) : '';
     const isSanction = clickedName.toLowerCase().includes('sanction');
     setSanctionMode(Boolean(isSanction));
     setActionBar(Boolean(changeActionBar(row)));
   };
+  // Render a compact status "chip" given the canonical status text
+  const renderStatusChip = (status) => {
+    if (!status) return null;
+    const s = (status || '').toString().trim().toUpperCase().replace(/_/g, ' ');
+    // map canonical status to visual class + label
+    const map = {
+      'NEW': { cls: 'new', label: 'New' },
+      'UNDER REVIEW': { cls: 'inprogress', label: 'In progress' },
+      'INFO REQUIRED': { cls: 'pending', label: 'Info required' },
+      'PENDING APPROVAL': { cls: 'pending', label: 'Pending' },
+      'VALIDATING': { cls: 'inprogress', label: 'Validating' },
+      'SITE_VERIFIED': { cls: 'inprogress', label: 'Site verified' },
+      'INFO_UPDATED': { cls: 'inprogress', label: 'Updated' },
+      'APPROVED': { cls: 'complete', label: 'Complete' },
+      'REJECTED': { cls: 'rejected', label: 'Rejected' },
+      'SIGN_REQUIRED': { cls: 'pending', label: 'Sign required' }
+    };
+    const def = map[s] || { cls: 'pending', label: status };
+    return (
+      <span className={`status-chip ${def.cls}`} title={status} aria-label={`Status: ${def.label}`}>
+        <span className="chip-icon" aria-hidden="true" />
+        <span>{def.label}</span>
+      </span>
+    );
+  }
   function changeActionBar(row) {
     const role = canonicalRole ?? (loggedInUser?.username);
     const status = row?.status;
@@ -245,7 +301,8 @@ const DashBoard = () => {
   // Server-based attachment counts (left as-is from earlier improvement)
   useEffect(() => {
     if (!rows || rows.length === 0) { setAttachmentCounts({}); return; }
-    const base = process.env.REACT_APP_API_URL ?? 'http://localhost:5063';
+    // const base ='http://localhost:5063';
+    const base = "https://livedocumentsdkapp.azurewebsites.net/web-services/loan-processing/api/loan-processing-service";
     let alive = true;
     (async () => {
       const entries = await Promise.all(rows.map(async (r) => {
@@ -271,13 +328,14 @@ const DashBoard = () => {
       try {
         const user = JSON.parse(localStorage.getItem('user') ?? 'null');
         const username = user?.username ?? '';
-        const base = process.env.REACT_APP_API_URL ?? 'http://localhost:5063';
-        const documentId = (pdfFileName && ((pdfFileName.match(/(\d+)(?=\.pdf$)/) ?? [] )[0])) ?? null;
+        // const base ='http://localhost:5063';
+        const base = "https://livedocumentsdkapp.azurewebsites.net/web-services/loan-processing/api/loan-processing-service";
+        const documentId = (pdfFileName && ((pdfFileName.match(/(\d+)(?=\.pdf$)/) ?? [])[0])) ?? null;
         const payload = { DocumentId: documentId, FileName: pdfFileName, Status: loanStatus };
         // const resp = await fetch(`${base}/api/Authentication/UpdateFileStatus`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         // if (!resp.ok) return;
         window.dispatchEvent(new CustomEvent('userFilesChanged', { detail: { documentId, fileName: pdfFileName, username } }));
-      } catch (e) { console.warn('UpdateFileStatus error', e); }
+      } catch (e) { }
     })();
   }, [loanStatus]);
   useEffect(() => {
@@ -302,28 +360,30 @@ const DashBoard = () => {
         <div className='dashboard'>
           <div>{loggedInUser ? (loggedInUser.displayTitle ?? roleTitles[loggedInUser.role] ?? roleTitles[loggedInUser.username] ?? 'Dashboard') : 'Dashboard'}</div>
           <div>
-            <button type="button" onClick={logout} className="addBtn">Logout</button>
+            {loggedInUser && (canonicalRole !== "Manager" && canonicalRole !== "Loan Officer" && canonicalRole !== 'Site Office') && (
+              <button type="button" onClick={() => openViewerForNew()} aria-label="Create row" title="Create row" className="header-primary">Create +</button>
+            )}
+            <button type="button" onClick={logout} className="header-ghost">Logout</button>
           </div>
         </div>
       </div>
       <div className="loandetails-container">
         <div className='loandetails-header'>
           <div>Loan Dashboard</div>
-          {loggedInUser && (canonicalRole !== "Manager" && canonicalRole !== "Loan Officer" && canonicalRole !== 'Site Office') && (
-            <button type="button" onClick={() => openViewerForNew()} aria-label="Create row" title="Create row" className="addBtn">Create +</button>
-          )}
+          {/* Create button moved to top header for better alignment with Logout */}
         </div>
         <div className="frame">
           <div className="tableWrap">
-            <style>{`[data-hover="rows"] tbody tr:hover td { background: #f3f4f6; }`}</style>
             <table className="loandetails-table" data-hover="rows">
               <thead>
                 <tr>
-                  <th className="th idCol">Loan ID</th>
-                  <th className="th">Application Name</th>
-                  <th className="th statusCol">Status</th>
-                  <th className="th lastCol">Action</th>
-                  <th className="th lastCol">Comments</th>
+
+                  <th className="idCol">Loan ID</th>
+                  <th>Application Name</th>
+                  <th>Status</th>
+                  <th className="actionCol">Action</th>
+                  <th>Comments</th>
+
                 </tr>
               </thead>
               <tbody>
@@ -334,7 +394,7 @@ const DashBoard = () => {
                     <tr key={`${r.id}-${idx}`}>
                       <td className="td idCol">{r.id}</td>
                       <td className="td">{`Loan_Requestor_${r.id}`}</td>
-                      <td className="td statusCol">{r.status}</td>
+                      <td className="td statusCol">{renderStatusChip(r.status)}</td>
                       <td className="td lastCol">
                         <button type="button" onClick={() => onView(r)} className="viewBtn">{r.viewText}</button>
                       </td>
