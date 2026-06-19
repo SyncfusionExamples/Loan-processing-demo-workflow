@@ -8,7 +8,7 @@ Overall, this sample demonstrates an efficient end‑to‑end loan‑processing 
 
 <p>
   <a href="https://document.syncfusion.com/showcase/react/loanprocessingdemoworkflow/index.html" 
-     style="font-size:20px;">
+     style="font-size:20px; font-weight:bold;">
     Live Demo
   </a>
 </p>
