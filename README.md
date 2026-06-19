@@ -6,7 +6,7 @@ Overall, this sample demonstrates an efficient end‑to‑end loan‑processing 
 
 ![Loan Workflow Preview](assets/showcase-sample-landing-page.png)
 
-## [🚀 Live Demo](https://document.syncfusion.com/showcase/react/loanprocessingdemoworkflow/index.html)
+## [Live Demo](https://document.syncfusion.com/showcase/react/loanprocessingdemoworkflow/index.html)
 
 # Getting Started with Create React App
 
