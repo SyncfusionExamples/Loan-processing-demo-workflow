@@ -4,6 +4,10 @@ This application showcases a complete digital loan‑processing workflow built u
 The system includes a secure Login page, a Loan Document List page with dynamic role-based actions, and a dedicated PDF Viewer page where all document operations are performed. Role-specific permissions ensure that customers fill forms only, officers annotate, and managers approve with stamping and signing features. After final approval, customers can download the completed loan document.
 Overall, this sample demonstrates an efficient end‑to‑end loan‑processing workflow with seamless in‑viewer operations and structured role-based control.
 
+![Loan Workflow Preview](assets/showcase-sample-landing-page.png)
+
+**Live Demo:** https://document.syncfusion.com/showcase/react/loanprocessingdemoworkflow/index.html
+
 # Getting Started with Create React App
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
